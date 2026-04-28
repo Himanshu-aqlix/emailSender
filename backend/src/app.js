@@ -1,0 +1,45 @@
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const morgan = require("morgan");
+const rateLimit = require("express-rate-limit");
+const routes = require("./routes");
+
+const app = express();
+app.use(helmet());
+app.use(cors({ origin: process.env.CLIENT_URL }));
+app.use(express.json({ limit: "5mb" }));
+app.use(morgan("dev"));
+
+const isTrackingPath = (req) =>
+  req.path.startsWith("/api/track/") ||
+  req.path.startsWith("/track/") ||
+  req.path.startsWith("/api/unsubscribe") ||
+  req.path.startsWith("/webhook/brevo");
+
+// Tracking endpoints (open pixel + click redirects) can receive bursts from email clients.
+// Keep protection, but allow higher volume to avoid false 429s.
+app.use(
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5000,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => !isTrackingPath(req),
+  })
+);
+
+// Default API rate limit (exclude tracking endpoints handled above).
+app.use(
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => isTrackingPath(req),
+  })
+);
+app.use(routes);
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
+module.exports = app;
