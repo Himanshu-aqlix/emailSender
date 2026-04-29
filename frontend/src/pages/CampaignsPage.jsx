@@ -36,6 +36,7 @@ export default function CampaignsPage() {
   const [form, setForm] = useState({ name: "", templateId: "", listIds: [] });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [templatePreviewOpen, setTemplatePreviewOpen] = useState(false);
 
   const loadWizardAssets = async () => {
     const [t, l, c] = await Promise.all([
@@ -310,10 +311,22 @@ export default function CampaignsPage() {
               {step === 2 ? (
                 <div className="wizard-body campaign-wizard-pane">
                   <label className="campaign-field-label" htmlFor="campaign-template-select">Template</label>
-                  <button type="button" className="select-card campaign-select-preview" tabIndex={-1} aria-hidden>
+                  <div className="select-card campaign-select-preview">
                     <strong>{selectedTemplate?.name || "Untitled template"}</strong>
                     <small>{selectedTemplate?.subject || "Hello {{name}}"}</small>
-                  </button>
+                    <button
+                      type="button"
+                      className="campaign-template-preview-icon"
+                      aria-label="Preview template"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (selectedTemplate) setTemplatePreviewOpen(true);
+                      }}
+                    >
+                      <Eye size={14} />
+                    </button>
+                  </div>
                   <div className="select-wrap campaign-select-wrap">
                     <select
                       id="campaign-template-select"
@@ -418,6 +431,34 @@ export default function CampaignsPage() {
                   {busy ? "Sending…" : "Send campaign"}
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {templatePreviewOpen && selectedTemplate ? (
+        <div className="modal-overlay campaign-modal-overlay" onClick={() => setTemplatePreviewOpen(false)}>
+          <div className="contact-modal campaign-template-preview-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="campaign-template-preview-head">
+              <div className="campaign-template-preview-meta">
+                <p><span>From:</span> <strong>Acme Inc.</strong></p>
+                <p><span>To:</span> <strong>jane.doe@example.com</strong></p>
+                <p><span>Subject:</span> <strong>{selectedTemplate.subject || "No subject"}</strong></p>
+              </div>
+              <button type="button" className="campaign-template-preview-close" onClick={() => setTemplatePreviewOpen(false)} aria-label="Close preview">
+                <X size={18} />
+              </button>
+            </div>
+            <div
+              className="campaign-template-preview-content"
+              dangerouslySetInnerHTML={{ __html: selectedTemplate.html || "<p>No template content.</p>" }}
+            />
+            <div className="campaign-template-preview-footer">
+              <button type="button" className="ghost-btn" onClick={() => setTemplatePreviewOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="campaign-template-use-btn" onClick={() => setTemplatePreviewOpen(false)}>
+                Use this template
+              </button>
             </div>
           </div>
         </div>

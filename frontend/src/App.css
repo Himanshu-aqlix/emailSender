@@ -2369,6 +2369,7 @@ th, td { border-bottom: 1px solid #e5e7eb; padding: 10px; text-align: left; }
   background: linear-gradient(180deg, #fafbfc, #fff);
   padding: 12px 14px;
   cursor: default;
+  position: relative;
 }
 
 .select-card.campaign-select-preview strong {
@@ -2383,6 +2384,104 @@ th, td { border-bottom: 1px solid #e5e7eb; padding: 10px; text-align: left; }
   font-size: 13px;
   color: #64748b;
   line-height: 1.35;
+}
+.campaign-template-preview-icon {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  margin-left: 8px;
+  display: grid;
+  place-items: center;
+}
+.campaign-template-preview-icon:hover {
+  color: #4f46e5;
+}
+.campaign-template-preview-modal {
+  width: min(680px, calc(100vw - 36px));
+  max-height: min(560px, calc(100vh - 56px));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 24px 62px rgba(15, 23, 42, 0.3);
+}
+.campaign-template-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px 24px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.campaign-template-preview-meta p {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.25;
+}
+.campaign-template-preview-meta p:last-child {
+  margin-bottom: 0;
+}
+.campaign-template-preview-meta span {
+  color: #9aa5b1;
+  display: inline-block;
+  min-width: 62px;
+}
+.campaign-template-preview-meta strong {
+  color: #0f172a;
+  font-weight: 700;
+}
+.campaign-template-preview-close {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  color: #94a3b8;
+  display: grid;
+  place-items: center;
+}
+/* .campaign-template-preview-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+} */
+.campaign-template-preview-content {
+  margin: 20px 24px;
+  border: 1px solid #eceff3;
+  border-radius: 12px;
+  background: #fff;
+  padding: 20px;
+  overflow-y: auto;
+  max-height: 400px;
+}
+.campaign-template-preview-footer {
+  margin-top: auto;
+  border-top: 1px solid #eceff3;
+  padding: 16px 24px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+}
+.campaign-template-use-btn {
+  width: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 18px;
+  background: #0b1736;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+}
+.campaign-template-use-btn:hover {
+  background: #0f2149;
 }
 
 .campaign-wizard-helper {
