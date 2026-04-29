@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AlertTriangle, ArrowUpFromLine, Download, FileText, Filter, ListPlus, Trash2, UserRoundPlus, X, Circle, Users } from "lucide-react";
-import { createContact, deleteContact, getContacts, uploadContactsFile } from "../services/contactService";
+import { bulkImportToLists, createContact, deleteContact, getContacts, uploadContactsFile } from "../services/contactService";
 import { createList, getLists } from "../services/listService";
 
 export default function ContactsPage() {
@@ -15,11 +15,12 @@ export default function ContactsPage() {
   const [limit] = useState(10);
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false });
   const [showFilters, setShowFilters] = useState(false);
+  const [showBulkUpdate, setShowBulkUpdate] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showListModal, setShowListModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
-  const [addForm, setAddForm] = useState({ name: "", email: "", phone: "", listId: "", listName: "Newsletter Subscribers" });
+  const [addForm, setAddForm] = useState({ name: "", email: "", phone: "", listId: "", listName: "", creatingNewList: false });
   const [importListName, setImportListName] = useState("Newsletter Subscribers");
   const [importSelectedFile, setImportSelectedFile] = useState(null);
   const [importSubmitting, setImportSubmitting] = useState(false);
@@ -27,6 +28,14 @@ export default function ContactsPage() {
   const [error, setError] = useState("");
   const [addContactSubmitting, setAddContactSubmitting] = useState(false);
   const importFileInputRef = useRef(null);
+  const bulkImportFileInputRef = useRef(null);
+  const bulkUpdateWrapRef = useRef(null);
+  const filterWrapRef = useRef(null);
+  const [selectedContactIds, setSelectedContactIds] = useState([]);
+  const [bulkSelectedLists, setBulkSelectedLists] = useState([]);
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [bulkError, setBulkError] = useState("");
+  const [bulkNotice, setBulkNotice] = useState("");
 
   const load = async () => {
     const params = new URLSearchParams();
@@ -48,6 +57,26 @@ export default function ContactsPage() {
   useEffect(() => {
     if (showAddModal) setError("");
   }, [showAddModal]);
+  useEffect(() => {
+    if (!showBulkUpdate) return undefined;
+    const onPointerDown = (event) => {
+      if (!bulkUpdateWrapRef.current?.contains(event.target)) {
+        setShowBulkUpdate(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [showBulkUpdate]);
+  useEffect(() => {
+    if (!showFilters) return undefined;
+    const onPointerDown = (event) => {
+      if (!filterWrapRef.current?.contains(event.target)) {
+        setShowFilters(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [showFilters]);
 
   const onFile = async (f) => {
     if (!f) return;
@@ -98,11 +127,17 @@ export default function ContactsPage() {
   const listEntries = Object.entries(listGroups);
   const displayRows = sorted;
   const hasContacts = contacts.length > 0;
+  const displayedIds = useMemo(() => displayRows.map((c) => String(c._id)), [displayRows]);
+  const allDisplayedSelected = displayedIds.length > 0 && displayedIds.every((id) => selectedContactIds.includes(id));
 
   const onAddContact = async () => {
     setError("");
     const emailTrim = addForm.email.trim();
-    const listOk = addForm.listId ? true : addForm.listName.trim().length > 0;
+    const listOk = addForm.listId
+      ? true
+      : addForm.creatingNewList
+        ? addForm.listName.trim().length > 0
+        : false;
     if (!emailTrim || !listOk) return;
     setAddContactSubmitting(true);
     try {
@@ -111,10 +146,10 @@ export default function ContactsPage() {
         email: emailTrim,
         phone: addForm.phone.trim(),
         listId: addForm.listId || undefined,
-        listName: addForm.listId ? undefined : addForm.listName.trim(),
+        listName: addForm.creatingNewList ? addForm.listName.trim() : undefined,
       });
       setShowAddModal(false);
-      setAddForm({ name: "", email: "", phone: "", listId: "", listName: "Newsletter Subscribers" });
+      setAddForm({ name: "", email: "", phone: "", listId: "", listName: "", creatingNewList: false });
       setPage(1);
       await load();
     } catch (e) {
@@ -126,7 +161,11 @@ export default function ContactsPage() {
 
   const addContactEmailOk = addForm.email.trim().length > 0;
   const addContactPhoneOk = addForm.phone.trim().length > 0;
-  const addContactListOk = addForm.listId ? true : addForm.listName.trim().length > 0;
+  const addContactListOk = addForm.listId
+    ? true
+    : addForm.creatingNewList
+      ? addForm.listName.trim().length > 0
+      : false;
   const canSubmitAddContact =
     addContactEmailOk && addContactPhoneOk && addContactListOk && !addContactSubmitting;
 
@@ -135,7 +174,7 @@ export default function ContactsPage() {
     const { data } = await createList({ name: newListName.trim() });
     setNewListName("");
     setShowListModal(false);
-    setAddForm((prev) => ({ ...prev, listId: data._id, listName: data.name }));
+    setAddForm((prev) => ({ ...prev, listId: data._id, listName: data.name, creatingNewList: false }));
     setPage(1);
     await load();
   };
@@ -146,6 +185,56 @@ export default function ContactsPage() {
     setDeleteTarget(null);
     if (!displayRows.length && page > 1) setPage((p) => p - 1);
     await load();
+  };
+
+  const toggleContactSelection = (contactId) => {
+    setSelectedContactIds((prev) => {
+      const id = String(contactId);
+      return prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+    });
+  };
+
+  const toggleAllDisplayed = () => {
+    setSelectedContactIds((prev) => {
+      if (allDisplayedSelected) {
+        return prev.filter((id) => !displayedIds.includes(id));
+      }
+      return Array.from(new Set([...prev, ...displayedIds]));
+    });
+  };
+
+  const onPickBulkImportFile = () => {
+    if (!bulkSelectedLists.length) {
+      setBulkError("Select at least one list.");
+      return;
+    }
+    bulkImportFileInputRef.current?.click();
+  };
+
+  const onBulkImportFileSelected = async (file) => {
+    if (!file) return;
+    setBulkError("");
+    setBulkNotice("");
+    if (!bulkSelectedLists.length) {
+      setBulkError("Select at least one list.");
+      return;
+    }
+
+    setBulkSubmitting(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("listIds", JSON.stringify(bulkSelectedLists));
+      await bulkImportToLists(formData);
+      setBulkNotice("Contacts imported successfully");
+      setBulkSelectedLists([]);
+      setSelectedContactIds([]);
+      await load();
+    } catch (e) {
+      setBulkError(e?.response?.data?.message || "Failed to import contacts.");
+    } finally {
+      setBulkSubmitting(false);
+    }
   };
 
   const listNamesForCsv = (c) => {
@@ -202,6 +291,50 @@ export default function ContactsPage() {
         ))}
         <button className="new-list-btn" onClick={() => setShowListModal(true)}><ListPlus size={13} /> New List</button>
       </div>
+      <div className="contacts-bulk-row">
+        <div className="toolbar-dropdown-anchor" ref={bulkUpdateWrapRef}>
+          <button
+            className="ghost-btn"
+            onClick={() => {
+              setShowFilters(false);
+              setShowBulkUpdate((v) => !v);
+            }}
+          >
+            Bulk Update
+          </button>
+          {showBulkUpdate ? (
+            <div className="filters-pop bulk-update-pop">
+              <label>Select Lists</label>
+              <div className="filters-list-select">
+                {lists.map((l) => {
+                  const checked = bulkSelectedLists.includes(String(l._id));
+                  return (
+                    <label key={l._id} className="filters-list-option">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          const id = String(l._id);
+                          setBulkSelectedLists((prev) =>
+                            e.target.checked ? [...new Set([...prev, id])] : prev.filter((x) => x !== id)
+                          );
+                        }}
+                      />
+                      <span>{l.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <button className="import-btn" disabled={bulkSubmitting} onClick={onPickBulkImportFile}>
+                Import Excel to Selected Lists
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {bulkError ? <p className="auth-error">{bulkError}</p> : null}
+      {bulkNotice ? <p className="helper">{bulkNotice}</p> : null}
 
       {hasContacts ? (
         <div className="contacts-table-wrap">
@@ -212,22 +345,34 @@ export default function ContactsPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <button className="ghost-btn" onClick={() => setShowFilters((v) => !v)}><Filter size={14} /> Filters</button>
-            {showFilters ? (
-              <div className="filters-pop">
-                <label>Sort</label>
-                <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-                  <option value="newest">Newest</option>
-                  <option value="name">Name A-Z</option>
-                </select>
-              </div>
-            ) : null}
+            <div className="toolbar-dropdown-anchor" ref={filterWrapRef}>
+              <button
+                className="ghost-btn"
+                onClick={() => {
+                  setShowBulkUpdate(false);
+                  setShowFilters((v) => !v);
+                }}
+              >
+                <Filter size={14} /> Filters
+              </button>
+              {showFilters ? (
+                <div className="filters-pop filters-dropdown-pop">
+                  <label>Sort</label>
+                  <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+                    <option value="newest">Newest</option>
+                    <option value="name">Name A-Z</option>
+                  </select>
+                </div>
+              ) : null}
+            </div>
           </div>
 
           <table className="contacts-table">
             <thead>
               <tr>
-                <th></th>
+                <th>
+                  <input type="checkbox" checked={allDisplayedSelected} onChange={toggleAllDisplayed} />
+                </th>
                 <th>NAME</th>
                 <th>EMAIL</th>
                 <th>PHONE</th>
@@ -239,7 +384,13 @@ export default function ContactsPage() {
             <tbody>
               {displayRows.map((c) => (
                 <tr key={c._id}>
-                  <td><Circle size={14} /></td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selectedContactIds.includes(String(c._id))}
+                      onChange={() => toggleContactSelection(c._id)}
+                    />
+                  </td>
                   <td className="name-cell">{c.name || "Unknown"}</td>
                   <td>{c.email}</td>
                   <td>{c.phone || "—"}</td>
@@ -353,39 +504,68 @@ export default function ContactsPage() {
                   autoComplete="tel"
                 />
               </div>
-              <div className="import-modal-field">
+              <div className="import-modal-field add-contact-list-group">
                 <label className="import-modal-label" htmlFor="add-contact-list">
                   List <span className="import-modal-required" aria-hidden="true">*</span>
                 </label>
-                <select
-                  id="add-contact-list"
-                  className="import-modal-input import-modal-select"
-                  value={addForm.listId}
-                  onChange={(e) => setAddForm({ ...addForm, listId: e.target.value })}
-                  disabled={addContactSubmitting}
-                >
-                  <option value="">Create / use default list name</option>
-                  {lists.map((l) => (
-                    <option key={l._id} value={l._id}>{l.name}</option>
-                  ))}
-                </select>
-              </div>
-              {!addForm.listId ? (
-                <div className="import-modal-field">
-                  <label className="import-modal-label" htmlFor="add-contact-new-list">
-                    New list name <span className="import-modal-required" aria-hidden="true">*</span>
-                  </label>
-                  <input
-                    id="add-contact-new-list"
-                    className="import-modal-input"
-                    value={addForm.listName}
-                    onChange={(e) => setAddForm({ ...addForm, listName: e.target.value })}
-                    placeholder="Newsletter Subscribers"
+
+                <div className="add-contact-list-row">
+                  <select
+                    id="add-contact-list"
+                    className="import-modal-input import-modal-select"
+                    value={addForm.listId}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setAddForm((prev) => ({
+                        ...prev,
+                        listId: nextId,
+                        creatingNewList: false,
+                      }));
+                    }}
                     disabled={addContactSubmitting}
-                    autoComplete="off"
-                  />
+                  >
+                    <option value="">Select a list</option>
+                    {lists.map((l) => (
+                      <option key={l._id} value={l._id}>
+                        {l.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    className="add-contact-create-list"
+                    onClick={() =>
+                      setAddForm((prev) => ({
+                        ...prev,
+                        listId: "",
+                        creatingNewList: true,
+                        listName: "",
+                      }))
+                    }
+                    disabled={addContactSubmitting}
+                  >
+                    + Create new list
+                  </button>
                 </div>
-              ) : null}
+
+                {addForm.creatingNewList ? (
+                  <div className="add-contact-new-list">
+                    <label className="import-modal-label" htmlFor="add-contact-new-list">
+                      New list name <span className="import-modal-required" aria-hidden="true">*</span>
+                    </label>
+                    <input
+                      id="add-contact-new-list"
+                      className="import-modal-input"
+                      value={addForm.listName}
+                      onChange={(e) => setAddForm({ ...addForm, listName: e.target.value })}
+                      placeholder="Newsletter Subscribers"
+                      disabled={addContactSubmitting}
+                      autoComplete="off"
+                    />
+                  </div>
+                ) : null}
+              </div>
               {error ? (
                 <p className="import-modal-inline-error" role="alert">
                   {error}
@@ -415,19 +595,44 @@ export default function ContactsPage() {
       ) : null}
 
       {showListModal ? (
-        <div className="modal-overlay" onClick={() => setShowListModal(false)}>
-          <div className="contact-modal small" onClick={(e) => e.stopPropagation()}>
-            <div className="contact-modal-head">
+        <div className="modal-overlay import-modal-overlay" onClick={() => setShowListModal(false)}>
+          <div className="contact-modal small import-modal list-create-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="import-modal-header">
               <div>
-                <h3>New List</h3>
-                <p>Create a contact list.</p>
+                <h3 id="new-list-modal-title">New List</h3>
+                <p id="new-list-modal-desc">Create a contact list for audience grouping and campaigns.</p>
               </div>
-              <button className="modal-close" onClick={() => setShowListModal(false)}><X size={16} /></button>
+              <button
+                type="button"
+                className="modal-close import-modal-close"
+                onClick={() => setShowListModal(false)}
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
             </div>
-            <label>List Name</label>
-            <input value={newListName} onChange={(e) => setNewListName(e.target.value)} placeholder="Newsletter Subscribers" />
-            <div className="contact-modal-actions">
-              <button className="import-btn" onClick={onCreateList}>Create List</button>
+            <div className="import-modal-body">
+              <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="new-list-name-input">
+                  List name <span className="import-modal-required" aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="new-list-name-input"
+                  className="import-modal-input"
+                  value={newListName}
+                  onChange={(e) => setNewListName(e.target.value)}
+                  placeholder="Newsletter Subscribers"
+                  autoComplete="off"
+                />
+              </div>
+            </div>
+            <div className="import-modal-footer">
+              <button type="button" className="import-modal-btn-secondary" onClick={() => setShowListModal(false)}>
+                Cancel
+              </button>
+              <button type="button" className="import-modal-btn-primary" onClick={onCreateList} disabled={!newListName.trim()}>
+                Create list
+              </button>
             </div>
           </div>
         </div>
@@ -571,6 +776,19 @@ export default function ContactsPage() {
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) setImportSelectedFile(f);
+          e.target.value = "";
+        }}
+        style={{ display: "none" }}
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+      <input
+        ref={bulkImportFileInputRef}
+        type="file"
+        accept=".xlsx,.csv"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) onBulkImportFileSelected(f);
           e.target.value = "";
         }}
         style={{ display: "none" }}

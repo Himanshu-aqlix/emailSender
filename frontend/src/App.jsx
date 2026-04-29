@@ -6,6 +6,7 @@ import DashboardPage from "./pages/DashboardPage";
 import ContactsPage from "./pages/ContactsPage";
 import TemplatesPage from "./pages/TemplatesPage";
 import CampaignsPage from "./pages/CampaignsPage";
+import CampaignDetailPage from "./pages/CampaignDetailPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import ListDetailPage from "./pages/ListDetailPage";
 import "./App.css";
@@ -30,6 +31,7 @@ export default function App() {
         <Route path="lists/:id" element={<ListDetailPage />} />
         <Route path="templates" element={<TemplatesPage />} />
         <Route path="campaigns" element={<CampaignsPage />} />
+        <Route path="campaigns/:id" element={<CampaignDetailPage />} />
         <Route path="analytics" element={<AnalyticsPage />} />
       </Route>
     </Routes>

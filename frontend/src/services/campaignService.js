@@ -16,3 +16,5 @@ export const getCampaigns = (params = {}) => {
 export const createCampaign = (data) => api.post("/api/campaigns", data);
 
 export const sendCampaign = (campaignId) => api.post("/api/campaigns/send", { campaignId });
+
+export const getCampaignDetails = (campaignId) => api.get(`/api/campaigns/${campaignId}/details`);

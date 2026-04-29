@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, ChevronDown, Filter, Plus, Send, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, Eye, Filter, Plus, Send, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { createCampaign, getCampaigns, sendCampaign } from "../services/campaignService";
 import { getContacts } from "../services/contactService";
 import { getLists } from "../services/listService";
@@ -19,6 +20,7 @@ const asArray = (value) => {
 const emptyCampaignPagination = { page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false, limit: 10 };
 
 export default function CampaignsPage() {
+  const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [open, setOpen] = useState(false);
   const [templates, setTemplates] = useState([]);
@@ -31,7 +33,7 @@ export default function CampaignsPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [lists, setLists] = useState([]);
   const [contacts, setContacts] = useState([]);
-  const [form, setForm] = useState({ name: "", templateId: "", listId: "" });
+  const [form, setForm] = useState({ name: "", templateId: "", listIds: [] });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -86,14 +88,15 @@ export default function CampaignsPage() {
   const openModal = () => {
     setError("");
     setStep(1);
-    setForm({ name: "", templateId: templates[0]?._id || "", listId: lists[0]?._id || "" });
+    const firstListId = lists[0]?._id || "";
+    setForm({ name: "", templateId: templates[0]?._id || "", listIds: firstListId ? [firstListId] : [] });
     setOpen(true);
   };
   const next = () => {
     setError("");
     if (step === 1 && !form.name.trim()) return setError("Campaign name is required.");
     if (step === 2 && !form.templateId) return setError("Please select a template.");
-    if (step === 3 && !form.listId) return setError("Please select a recipient list.");
+    if (step === 3 && !(form.listIds || []).length) return setError("Please select at least one recipient list.");
     setStep((s) => Math.min(4, s + 1));
   };
   const back = () => setStep((s) => Math.max(1, s - 1));
@@ -119,8 +122,16 @@ export default function CampaignsPage() {
       return refs.some((l) => String(l?._id || l) === String(listId));
     }).length;
 
+  const getSelectedAudienceCount = (selectedIds) =>
+    asArray(contacts).filter((c) => {
+      const refs = Array.isArray(c.lists) ? c.lists : [];
+      return refs.some((l) => selectedIds.includes(String(l?._id || l)));
+    }).length;
+
   const selectedTemplate = templates.find((t) => t._id === form.templateId);
-  const selectedList = lists.find((l) => l._id === form.listId);
+  const selectedListIds = (form.listIds || []).map(String);
+  const selectedLists = lists.filter((l) => selectedListIds.includes(String(l._id)));
+  const selectedAudienceCount = getSelectedAudienceCount(selectedListIds);
 
   return (
     <section className="campaigns-page">
@@ -171,6 +182,7 @@ export default function CampaignsPage() {
               <th>Status</th>
               <th>Created</th>
               <th>Sent</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -178,7 +190,18 @@ export default function CampaignsPage() {
               <tr key={c._id}>
                 <td className="name-cell">{c.name}</td>
                 <td>{c.templateId?.name || "—"}</td>
-                <td><span className="list-pill">{c.listId?.name || "—"}</span></td>
+                <td>
+                  {Array.isArray(c.listIds) && c.listIds.length ? (
+                    <span className="list-pill-wrap">
+                      {c.listIds.slice(0, 2).map((l) => (
+                        <span key={l._id} className="list-pill">{l?.name || "—"}</span>
+                      ))}
+                      {c.listIds.length > 2 ? <span className="list-pill list-pill-more">+{c.listIds.length - 2}</span> : null}
+                    </span>
+                  ) : (
+                    <span className="list-pill">{c.listId?.name || "—"}</span>
+                  )}
+                </td>
                 <td>
                   <span
                     className={`status-pill ${
@@ -190,6 +213,11 @@ export default function CampaignsPage() {
                 </td>
                 <td>{new Date(c.createdAt).toLocaleDateString()}</td>
                 <td>{c.status === "completed" ? new Date(c.updatedAt).toLocaleDateString() : "—"}</td>
+                <td>
+                  <button type="button" className="ghost-btn campaigns-view-btn" onClick={() => navigate(`/campaigns/${c._id}`)}>
+                    <Eye size={14} /> View
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -302,26 +330,60 @@ export default function CampaignsPage() {
               ) : null}
 
               {step === 3 ? (
-                <div className="wizard-body campaign-wizard-pane">
-                  <label className="campaign-field-label" htmlFor="campaign-list-select">Recipient list</label>
-                  <div className="select-wrap campaign-select-wrap">
-                    <select
-                      id="campaign-list-select"
-                      className="campaign-wizard-select"
-                      value={form.listId}
-                      onChange={(e) => setForm({ ...form, listId: e.target.value })}
-                    >
-                      <option value="">Select a list</option>
-                      {lists.map((l) => <option key={l._id} value={l._id}>{l.name} ({getListCount(l._id)} contacts)</option>)}
-                    </select>
-                    <ChevronDown size={18} aria-hidden />
+                <div className="wizard-body campaign-wizard-pane campaign-wizard-audience-pane">
+                  <label className="campaign-field-label">Recipient lists</label>
+                  <div className="campaign-list-toolbar">
+                    <span>{(form.listIds || []).length} selected</span>
+                    <div className="campaign-list-toolbar-actions">
+                      <button
+                        type="button"
+                        className="campaign-list-action"
+                        onClick={() => setForm((prev) => ({ ...prev, listIds: lists.map((l) => String(l._id)) }))}
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        className="campaign-list-action"
+                        onClick={() => setForm((prev) => ({ ...prev, listIds: [] }))}
+                      >
+                        Clear
+                      </button>
+                    </div>
                   </div>
-                  {selectedList ? (
+                  <div className="campaign-list-multiselect" role="group" aria-label="Select recipient lists">
+                    {lists.map((l) => {
+                      const id = String(l._id);
+                      const checked = selectedListIds.includes(id);
+                      return (
+                        <label key={id} className={`campaign-list-option ${checked ? "checked" : ""}`}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              setForm((prev) => {
+                                const current = (prev.listIds || []).map(String);
+                                const nextIds = e.target.checked
+                                  ? [...new Set([...current, id])]
+                                  : current.filter((x) => x !== id);
+                                return { ...prev, listIds: nextIds };
+                              });
+                            }}
+                          />
+                          <span className="campaign-list-copy">
+                            <span className="campaign-list-title">{l.name}</span>
+                            <span className="campaign-list-count">{getListCount(l._id)} contacts</span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {(form.listIds || []).length ? (
                     <p className="campaign-wizard-helper">
-                      This send will reach <strong>{getListCount(selectedList._id)}</strong> {getListCount(selectedList._id) === 1 ? "contact" : "contacts"} in <strong>{selectedList.name}</strong>.
+                      This send will reach <strong>{selectedAudienceCount}</strong> {selectedAudienceCount === 1 ? "contact" : "contacts"} across <strong>{(form.listIds || []).length}</strong> {(form.listIds || []).length === 1 ? "list" : "lists"}.
                     </p>
                   ) : (
-                    <p className="campaign-wizard-helper muted">Select a list to see how many recipients are included.</p>
+                    <p className="campaign-wizard-helper muted">Select one or more lists to see how many recipients are included.</p>
                   )}
                 </div>
               ) : null}
@@ -332,7 +394,10 @@ export default function CampaignsPage() {
                   <div className="review-box campaign-review-box">
                     <p><span className="campaign-review-k">Campaign</span> {form.name}</p>
                     <p><span className="campaign-review-k">Template</span> {selectedTemplate?.name || "—"}</p>
-                    <p><span className="campaign-review-k">Audience</span> {selectedList?.name || "—"} · {selectedList ? getListCount(selectedList._id) : 0} contacts</p>
+                    <p>
+                      <span className="campaign-review-k">Audience</span>
+                      {selectedLists.length ? selectedLists.map((l) => l.name).join(", ") : "—"} · {selectedAudienceCount} contacts
+                    </p>
                   </div>
                 </div>
               ) : null}

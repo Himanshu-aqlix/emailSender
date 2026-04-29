@@ -31,7 +31,8 @@ const processCampaign = async (job) => {
   const campaign = await Campaign.findById(job.data.campaignId);
   if (!campaign) return;
   const template = await Template.findById(campaign.templateId);
-  const contacts = await Contact.find({ owner: campaign.owner, lists: campaign.listId });
+  const targetListIds = Array.isArray(campaign.listIds) && campaign.listIds.length ? campaign.listIds : [campaign.listId];
+  const contacts = await Contact.find({ owner: campaign.owner, lists: { $in: targetListIds } });
   campaign.status = "sending";
   await campaign.save();
   for (const c of contacts) {

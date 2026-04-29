@@ -1,7 +1,7 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const xlsx = require("xlsx");
-const sanitizeHtml = require("sanitize-html");
+const { sanitizeTemplateHtml } = require("../utils/sanitizeTemplateHtml");
 const User = require("../models/User");
 const List = require("../models/List");
 const Contact = require("../models/Contact");
@@ -238,6 +238,61 @@ exports.bulkContacts = async (req, res) => {
   }
 };
 
+exports.bulkImportToLists = async (req, res) => {
+  try {
+    if (!req.file?.buffer) return res.status(400).json({ message: "file is required" });
+    let listIds = [];
+    try {
+      const raw = req.body.listIds;
+      const parsed = Array.isArray(raw) ? raw : JSON.parse(raw || "[]");
+      listIds = [...new Set((Array.isArray(parsed) ? parsed : []).map((id) => String(id || "").trim()).filter(Boolean))];
+    } catch {
+      return res.status(400).json({ message: "listIds must be a valid array" });
+    }
+    if (!listIds.length) return res.status(400).json({ message: "At least one list must be selected" });
+
+    const lists = await List.find({ owner: req.user.id, _id: { $in: listIds } }).select("_id name");
+    if (!lists.length) return res.status(404).json({ message: "Selected lists not found" });
+    const validListIds = lists.map((l) => String(l._id));
+
+    const parsedRows = parseSpreadsheetBufferToRows(req.file.buffer);
+    if (!parsedRows.length) return res.status(400).json({ message: "No valid rows (need email column)" });
+
+    const savedIds = [];
+    for (const row of parsedRows) {
+      let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
+      if (contact) {
+        if (row.name) contact.name = row.name;
+        if (row.phone) contact.phone = row.phone;
+        Object.assign(contact.fields || {}, row.fields || {});
+        await contact.save();
+      } else {
+        contact = await Contact.create({
+          owner: req.user.id,
+          name: row.name,
+          email: row.email,
+          phone: row.phone || "",
+          lists: validListIds,
+          fields: row.fields || {},
+        });
+      }
+
+      savedIds.push(contact._id);
+      for (const listId of validListIds) {
+        await attachContactToList(req.user.id, contact._id, listId);
+      }
+    }
+
+    return res.status(201).json({
+      imported: savedIds.length,
+      listIds: validListIds,
+      message: "Contacts imported successfully",
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || "Bulk import to lists failed" });
+  }
+};
+
 exports.addContactsToList = async (req, res) => {
   const listId = req.params.id;
   const { contactIds } = req.body;
@@ -286,7 +341,7 @@ exports.createTemplate = async (req, res) => {
     owner: req.user.id,
     name: req.body.name,
     subject: req.body.subject,
-    html: sanitizeHtml(req.body.html),
+    html: sanitizeTemplateHtml(req.body.html),
   });
   res.status(201).json(t);
 };
@@ -297,7 +352,7 @@ exports.updateTemplate = async (req, res) => {
     {
       name: req.body.name,
       subject: req.body.subject,
-      html: sanitizeHtml(req.body.html),
+      html: sanitizeTemplateHtml(req.body.html),
     },
     { new: true }
   );
@@ -311,10 +366,19 @@ exports.deleteTemplate = async (req, res) => {
 };
 
 exports.createCampaign = async (req, res) => {
-  if (!req.body.name || !req.body.templateId || !req.body.listId) {
-    return res.status(400).json({ message: "name, templateId and listId are required" });
+  const rawListIds = Array.isArray(req.body.listIds) ? req.body.listIds : req.body.listId ? [req.body.listId] : [];
+  const listIds = [...new Set(rawListIds.map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!req.body.name || !req.body.templateId || !listIds.length) {
+    return res.status(400).json({ message: "name, templateId and at least one listId are required" });
   }
-  const c = await Campaign.create({ owner: req.user.id, name: req.body.name, templateId: req.body.templateId, listId: req.body.listId, status: "draft" });
+  const c = await Campaign.create({
+    owner: req.user.id,
+    name: req.body.name,
+    templateId: req.body.templateId,
+    listId: listIds[0],
+    listIds,
+    status: "draft",
+  });
   res.status(201).json(c);
 };
 exports.sendCampaign = async (req, res) => {
@@ -349,6 +413,7 @@ exports.getCampaigns = async (req, res) => {
     Campaign.find(filter)
       .populate("templateId", "name")
       .populate("listId", "name")
+      .populate("listIds", "name")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit),
@@ -381,6 +446,41 @@ exports.getCampaigns = async (req, res) => {
       hasNextPage: page * limit < total,
       hasPrevPage: page > 1,
     },
+  });
+};
+
+exports.getCampaignDetails = async (req, res) => {
+  const campaign = await Campaign.findOne({ _id: req.params.id, owner: req.user.id })
+    .populate("templateId", "name subject")
+    .populate("listId", "name")
+    .populate("listIds", "name");
+  if (!campaign) return res.status(404).json({ message: "Campaign not found" });
+
+  const logs = await EmailLog.find({ owner: req.user.id, campaignId: campaign._id })
+    .sort({ sentAt: -1, createdAt: -1 })
+    .lean();
+
+  const sent = logs.filter((l) => ["sent", "delivered"].includes(String(l.status || "").toLowerCase())).length;
+  const opened = logs.filter((l) => !!l.opened).length;
+  const clicked = logs.filter((l) => !!l.clicked).length;
+  const failed = logs.filter((l) => ["failed", "bounced"].includes(String(l.status || "").toLowerCase())).length;
+
+  const contacts = logs.map((l) => ({
+    _id: l._id,
+    email: l.email,
+    status: l.status,
+    opened: !!l.opened,
+    clicked: !!l.clicked,
+    sentAt: l.sentAt || l.createdAt,
+    openedAt: l.openedAt || null,
+    clickedAt: l.clickedAt || null,
+    createdAt: l.createdAt,
+  }));
+
+  return res.json({
+    campaign,
+    stats: { sent, opened, clicked, failed },
+    contacts,
   });
 };
 

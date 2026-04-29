@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { AlertTriangle, ArrowUpFromLine, Circle, Trash2, Users, UserRoundPlus, X } from "lucide-react";
+import { AlertTriangle, ArrowUpDown, ArrowUpFromLine, Mail, Phone, Trash2, UserRoundPlus, Users, X } from "lucide-react";
 import { bulkContacts, createContact, deleteContact } from "../services/contactService";
 import { getListById } from "../services/listService";
 
@@ -22,6 +22,8 @@ export default function ListDetailPage() {
   const [importSubmitting, setImportSubmitting] = useState(false);
   const [importError, setImportError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [sortBy, setSortBy] = useState("newest");
+  const [filterBy, setFilterBy] = useState("all");
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -101,7 +103,6 @@ export default function ListDetailPage() {
   };
 
   const canSubmitAdd = addForm.email.trim().length > 0 && addForm.phone.trim().length > 0 && !addSubmitting;
-
   const onDelete = async () => {
     if (!deleteTarget?._id) return;
     await deleteContact(deleteTarget._id);
@@ -109,34 +110,78 @@ export default function ListDetailPage() {
     await load();
   };
 
+  const getInitials = (name, email) => {
+    const source = String(name || email || "NA").trim();
+    const parts = source.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+    return source.slice(0, 2).toUpperCase();
+  };
+
+  const displayContacts = useMemo(() => {
+    let rows = [...contacts];
+    if (filterBy === "hasPhone") rows = rows.filter((c) => String(c.phone || "").trim().length > 0);
+    if (filterBy === "noPhone") rows = rows.filter((c) => String(c.phone || "").trim().length === 0);
+
+    rows.sort((a, b) => {
+      if (sortBy === "name") return String(a.name || "").localeCompare(String(b.name || ""));
+      const aTime = new Date(a.createdAt || 0).getTime();
+      const bTime = new Date(b.createdAt || 0).getTime();
+      return sortBy === "oldest" ? aTime - bTime : bTime - aTime;
+    });
+    return rows;
+  }, [contacts, filterBy, sortBy]);
+
   return (
-    <section className="contacts-page">
-      <div className="contacts-head">
-        <div>
-          <h2 className="dashboard-title">{listName || "List"}</h2>
-          <p className="dashboard-subtitle">
-            {loading ? "Loading…" : `${contacts.length} contact${contacts.length === 1 ? "" : "s"} in this list.`}
-          </p>
+    <section className="list-detail-page">
+      <div className="list-detail-head">
+        <div className="list-detail-title-wrap">
+          <span className="list-detail-badge">{(listName || "LI").slice(0, 2).toUpperCase()}</span>
+          <div>
+            <h2 className="dashboard-title">{listName || "List"}</h2>
+            <p className="dashboard-subtitle">
+              {loading ? "Loading…" : `${contacts.length} contact${contacts.length === 1 ? "" : "s"} in this list · last updated today`}
+            </p>
+          </div>
         </div>
-        <div className="contacts-actions">
-          <button type="button" className="ghost-btn" onClick={() => navigate("/contacts")}>
-            All contacts
+        <div className="list-detail-actions">
+          <button type="button" className="ghost-btn list-detail-btn" onClick={() => navigate("/contacts")}>
+            <Users size={14} /> All contacts
           </button>
-          <button type="button" className="ghost-btn" onClick={() => setShowAddModal(true)}>
+          <button type="button" className="ghost-btn list-detail-btn" onClick={() => setShowAddModal(true)}>
             <UserRoundPlus size={14} /> Add Contact
           </button>
-          <button type="button" className="import-btn" onClick={() => setShowImportModal(true)}>
+          <button type="button" className="import-btn list-detail-btn-primary" onClick={() => setShowImportModal(true)}>
             <ArrowUpFromLine size={14} /> Import Excel
           </button>
         </div>
       </div>
 
       {contacts.length ? (
-        <div className="contacts-table-wrap">
+        <div className="contacts-table-wrap list-detail-table-wrap">
+          <div className="list-detail-toolbar">
+            <div className="list-detail-toolbar-left">
+              <label className="list-detail-control">
+                <span>Filter</span>
+                <select value={filterBy} onChange={(e) => setFilterBy(e.target.value)}>
+                  <option value="all">All contacts</option>
+                  <option value="hasPhone">With phone</option>
+                  <option value="noPhone">Without phone</option>
+                </select>
+              </label>
+              <label className="list-detail-control">
+                <span><ArrowUpDown size={13} /> Sort</span>
+                <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+                  <option value="newest">Newest</option>
+                  <option value="oldest">Oldest</option>
+                  <option value="name">Name A-Z</option>
+                </select>
+              </label>
+            </div>
+            <span>Showing {displayContacts.length} of {contacts.length}</span>
+          </div>
           <table className="contacts-table">
             <thead>
               <tr>
-                <th></th>
                 <th>NAME</th>
                 <th>EMAIL</th>
                 <th>PHONE</th>
@@ -146,14 +191,20 @@ export default function ListDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {contacts.map((c) => (
+              {displayContacts.map((c, idx) => {
+                return (
                 <tr key={c._id}>
-                  <td>
-                    <Circle size={14} />
+                  <td className="name-cell">
+                    <div className="list-contact-name">
+                      <span className="list-contact-avatar">{getInitials(c.name, c.email)}</span>
+                      <div>
+                        <strong>{c.name || "Unknown"}</strong>
+                        <small>Contact #{String(idx + 1).padStart(4, "0")}</small>
+                      </div>
+                    </div>
                   </td>
-                  <td className="name-cell">{c.name || "Unknown"}</td>
-                  <td>{c.email}</td>
-                  <td>{c.phone || "—"}</td>
+                  <td><span className="list-cell-icon"><Mail size={13} /> {c.email}</span></td>
+                  <td><span className="list-cell-icon"><Phone size={13} /> {c.phone || "—"}</span></td>
                   <td>
                     <span className="list-pill">{listName}</span>
                   </td>
@@ -164,7 +215,8 @@ export default function ListDetailPage() {
                     </button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
