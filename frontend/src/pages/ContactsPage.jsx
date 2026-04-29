@@ -10,7 +10,6 @@ export default function ContactsPage() {
   const [lists, setLists] = useState([]);
   const [query, setQuery] = useState("");
   const [activeList, setActiveList] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
   const [sortBy, setSortBy] = useState("newest");
   const [page, setPage] = useState(1);
   const [limit] = useState(10);
@@ -20,7 +19,7 @@ export default function ContactsPage() {
   const [showListModal, setShowListModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
-  const [addForm, setAddForm] = useState({ name: "", email: "", listId: "", listName: "Newsletter Subscribers" });
+  const [addForm, setAddForm] = useState({ name: "", email: "", phone: "", listId: "", listName: "Newsletter Subscribers" });
   const [importListName, setImportListName] = useState("Newsletter Subscribers");
   const [importSelectedFile, setImportSelectedFile] = useState(null);
   const [importSubmitting, setImportSubmitting] = useState(false);
@@ -81,19 +80,19 @@ export default function ContactsPage() {
     }
   };
 
-  const filtered = contacts.filter((c) => (statusFilter === "all" ? true : statusFilter === "subscribed"));
-
-  const sorted = [...filtered].sort((a, b) => {
+  const sorted = [...contacts].sort((a, b) => {
     if (sortBy === "name") return (a.name || "").localeCompare(b.name || "");
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
 
   const listGroups = contacts.reduce((acc, c) => {
-    const list = typeof c.listId === "object" ? c.listId : null;
-    const id = String(list?._id || c.listId);
-    const name = list?.name || `List ${id.slice(-4)}`;
-    if (!acc[id]) acc[id] = { count: 0, name };
-    acc[id].count += 1;
+    const refs = Array.isArray(c.lists) ? c.lists : [];
+    refs.forEach((list) => {
+      const id = String(list?._id || list);
+      const name = list?.name || `List ${id.slice(-4)}`;
+      if (!acc[id]) acc[id] = { count: 0, name };
+      acc[id].count += 1;
+    });
     return acc;
   }, {});
   const listEntries = Object.entries(listGroups);
@@ -110,11 +109,12 @@ export default function ContactsPage() {
       await createContact({
         name: addForm.name.trim(),
         email: emailTrim,
+        phone: addForm.phone.trim(),
         listId: addForm.listId || undefined,
         listName: addForm.listId ? undefined : addForm.listName.trim(),
       });
       setShowAddModal(false);
-      setAddForm({ name: "", email: "", listId: "", listName: "Newsletter Subscribers" });
+      setAddForm({ name: "", email: "", phone: "", listId: "", listName: "Newsletter Subscribers" });
       setPage(1);
       await load();
     } catch (e) {
@@ -125,8 +125,10 @@ export default function ContactsPage() {
   };
 
   const addContactEmailOk = addForm.email.trim().length > 0;
+  const addContactPhoneOk = addForm.phone.trim().length > 0;
   const addContactListOk = addForm.listId ? true : addForm.listName.trim().length > 0;
-  const canSubmitAddContact = addContactEmailOk && addContactListOk && !addContactSubmitting;
+  const canSubmitAddContact =
+    addContactEmailOk && addContactPhoneOk && addContactListOk && !addContactSubmitting;
 
   const onCreateList = async () => {
     if (!newListName.trim()) return;
@@ -146,13 +148,22 @@ export default function ContactsPage() {
     await load();
   };
 
+  const listNamesForCsv = (c) => {
+    const refs = Array.isArray(c.lists) ? c.lists : [];
+    if (!refs.length) return "";
+    return refs
+      .map((l) => (typeof l === "object" ? l?.name : ""))
+      .filter(Boolean)
+      .join("; ");
+  };
+
   const exportCsv = () => {
-    const header = ["name", "email", "list", "status", "added"];
+    const header = ["name", "email", "phone", "list", "added"];
     const rows = displayRows.map((c) => [
       c.name || "",
       c.email || "",
-      (typeof c.listId === "object" ? c.listId?.name : `List ${String(c.listId || "").slice(-4)}`) || "",
-      "subscribed",
+      c.phone || "",
+      listNamesForCsv(c),
       new Date(c.createdAt).toLocaleDateString(),
     ]);
     const csv = [header, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -197,18 +208,13 @@ export default function ContactsPage() {
           <div className="contacts-toolbar">
             <input
               className="contacts-search"
-              placeholder="Search by name or email"
+              placeholder="Search by name, email, or phone"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
             <button className="ghost-btn" onClick={() => setShowFilters((v) => !v)}><Filter size={14} /> Filters</button>
             {showFilters ? (
               <div className="filters-pop">
-                <label>Status</label>
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                  <option value="all">All</option>
-                  <option value="subscribed">Subscribed</option>
-                </select>
                 <label>Sort</label>
                 <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
                   <option value="newest">Newest</option>
@@ -224,8 +230,8 @@ export default function ContactsPage() {
                 <th></th>
                 <th>NAME</th>
                 <th>EMAIL</th>
+                <th>PHONE</th>
                 <th>LIST</th>
-                <th>STATUS</th>
                 <th>ADDED</th>
                 <th></th>
               </tr>
@@ -236,8 +242,14 @@ export default function ContactsPage() {
                   <td><Circle size={14} /></td>
                   <td className="name-cell">{c.name || "Unknown"}</td>
                   <td>{c.email}</td>
-                  <td><span className="list-pill">{typeof c.listId === "object" ? c.listId?.name : `List ${String(c.listId || "").slice(-4)}`}</span></td>
-                  <td><span className="status-good">subscribed</span></td>
+                  <td>{c.phone || "—"}</td>
+                  <td>
+                    <span className="list-pill">
+                      {Array.isArray(c.lists) && c.lists.length
+                        ? c.lists.map((l) => (typeof l === "object" ? l?.name : "")).filter(Boolean).join(", ") || "—"
+                        : "—"}
+                    </span>
+                  </td>
                   <td>{new Date(c.createdAt).toLocaleDateString()}</td>
                 <td><button className="delete-btn" onClick={() => setDeleteTarget(c)}><Trash2 size={14} /></button></td>
                 </tr>
@@ -324,6 +336,21 @@ export default function ContactsPage() {
                   onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
                   disabled={addContactSubmitting}
                   autoComplete="email"
+                />
+              </div>
+              <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="add-contact-phone">
+                  Phone <span className="import-modal-required" aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="add-contact-phone"
+                  className="import-modal-input"
+                  type="tel"
+                  placeholder="+1 555 0100"
+                  value={addForm.phone}
+                  onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
+                  disabled={addContactSubmitting}
+                  autoComplete="tel"
                 />
               </div>
               <div className="import-modal-field">

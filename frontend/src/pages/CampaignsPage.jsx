@@ -36,7 +36,11 @@ export default function CampaignsPage() {
   const [error, setError] = useState("");
 
   const loadWizardAssets = async () => {
-    const [t, l, c] = await Promise.all([getTemplates(), getLists(), getContacts()]);
+    const [t, l, c] = await Promise.all([
+      getTemplates(),
+      getLists(),
+      getContacts("page=1&limit=500"),
+    ]);
     setTemplates(asArray(t.data));
     setLists(asArray(l.data));
     setContacts(asArray(c.data));
@@ -109,10 +113,11 @@ export default function CampaignsPage() {
     }
   };
 
-  const getListCount = (listId) => asArray(contacts).filter((c) => {
-    const id = typeof c.listId === "object" ? c.listId?._id : c.listId;
-    return String(id) === String(listId);
-  }).length;
+  const getListCount = (listId) =>
+    asArray(contacts).filter((c) => {
+      const refs = Array.isArray(c.lists) ? c.lists : [];
+      return refs.some((l) => String(l?._id || l) === String(listId));
+    }).length;
 
   const selectedTemplate = templates.find((t) => t._id === form.templateId);
   const selectedList = lists.find((l) => l._id === form.listId);

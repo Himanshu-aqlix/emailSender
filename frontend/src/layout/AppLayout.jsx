@@ -1,21 +1,34 @@
 import { useEffect, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
-import { Bell, LayoutDashboard, Users, FileText, Send, BarChart3, LogOut, X } from "lucide-react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import {
+  Bell,
+  LayoutDashboard,
+  Users,
+  FileText,
+  Send,
+  BarChart3,
+  LogOut,
+  X,
+  List as ListIcon,
+  ChevronDown,
+} from "lucide-react";
 import { getMe } from "../services/authService";
+import { getLists } from "../services/listService";
 import { avatarGradientForEmail, formatDisplayName, initialsFromEmail, readStoredUser } from "../utils/userDisplay";
 
-const items = [
-  { key: "dashboard", icon: LayoutDashboard, label: "Dashboard" },
-  { key: "contacts", icon: Users, label: "Contacts" },
+const navAfterLists = [
   { key: "templates", icon: FileText, label: "Templates" },
   { key: "campaigns", icon: Send, label: "Campaigns" },
   { key: "analytics", icon: BarChart3, label: "Analytics" },
 ];
 
 export default function AppLayout() {
+  const location = useLocation();
   const [profile, setProfile] = useState(readStoredUser);
   const [profileLoading, setProfileLoading] = useState(true);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [listsOpen, setListsOpen] = useState(true);
+  const [lists, setLists] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,6 +46,24 @@ export default function AppLayout() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getLists()
+      .then(({ data }) => {
+        if (!cancelled) setLists(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (!cancelled) setLists([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (location.pathname.startsWith("/lists/")) setListsOpen(true);
+  }, [location.pathname]);
 
   const email = profile?.email ?? "";
   const displayName = email ? formatDisplayName(email) : profileLoading ? "Loading…" : "Account";
@@ -64,7 +95,51 @@ export default function AppLayout() {
         </div>
 
         <nav className="app-nav">
-          {items.map((item) => (
+          <NavLink to="/dashboard" className={({ isActive }) => `app-nav-link${isActive ? " active" : ""}`}>
+            <LayoutDashboard size={15} />
+            <span>Dashboard</span>
+          </NavLink>
+          <NavLink to="/contacts" className={({ isActive }) => `app-nav-link${isActive ? " active" : ""}`}>
+            <Users size={15} />
+            <span>Contacts</span>
+          </NavLink>
+
+          <div className="app-sidebar-lists">
+            <button
+              type="button"
+              className={`app-nav-link app-sidebar-lists-toggle${listsOpen ? " is-open" : ""}`}
+              onClick={() => setListsOpen((o) => !o)}
+              aria-expanded={listsOpen}
+            >
+              <span className="app-sidebar-lists-toggle-label">
+                <ListIcon size={15} />
+                <span>Lists</span>
+              </span>
+              <ChevronDown size={14} className="app-sidebar-lists-arrow" aria-hidden />
+            </button>
+            {listsOpen ? (
+              <div className="app-sidebar-lists-sub">
+                {lists.length === 0 ? (
+                  <span className="app-sidebar-lists-empty">No lists yet</span>
+                ) : (
+                  lists.map((list) => (
+                    <NavLink
+                      key={list._id}
+                      to={`/lists/${list._id}`}
+                      className={({ isActive }) =>
+                        `app-sidebar-list-link${isActive ? " active" : ""}`
+                      }
+                      title={list.name}
+                    >
+                      {list.name}
+                    </NavLink>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          {navAfterLists.map((item) => (
             <NavLink
               key={item.key}
               to={`/${item.key}`}

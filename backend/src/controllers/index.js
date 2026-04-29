@@ -12,6 +12,36 @@ const { enqueueCampaign } = require("../queues/emailQueue");
 
 const sign = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
 
+const attachContactToList = async (ownerId, contactId, listId) => {
+  await List.updateOne({ _id: listId, owner: ownerId }, { $addToSet: { contacts: contactId } });
+  await Contact.updateOne({ _id: contactId, owner: ownerId }, { $addToSet: { lists: listId } });
+};
+
+/** Parse first sheet of .xlsx / .xls / .csv buffer into { name, email, phone, fields } rows. */
+const parseSpreadsheetBufferToRows = (buffer) => {
+  const wb = xlsx.read(buffer, { type: "buffer" });
+  const rows = xlsx.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+  return rows
+    .map((r) => {
+      const o = Object.fromEntries(Object.entries(r).map(([k, v]) => [String(k).toLowerCase(), v]));
+      const fields = { ...o };
+      delete fields.name;
+      delete fields.email;
+      delete fields.phone;
+      delete fields.mobile;
+      delete fields.tel;
+      const email = String(o.email || "").toLowerCase().trim();
+      const phone = String(o.phone ?? o.mobile ?? o.tel ?? "").trim();
+      return {
+        name: String(o.name || "").trim(),
+        email,
+        phone,
+        fields,
+      };
+    })
+    .filter((x) => x.email);
+};
+
 exports.register = async (req, res) => {
   try {
     const hash = await bcrypt.hash(req.body.password, 10);
@@ -44,15 +74,30 @@ exports.uploadExcel = async (req, res) => {
   const requestedName = (req.body.listName || `List ${Date.now()}`).trim();
   let list = await List.findOne({ owner: req.user.id, name: requestedName });
   if (!list) list = await List.create({ owner: req.user.id, name: requestedName });
-  const wb = xlsx.read(req.file.buffer, { type: "buffer" });
-  const rows = xlsx.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
-  const docs = rows.map((r) => {
-    const o = Object.fromEntries(Object.entries(r).map(([k, v]) => [String(k).toLowerCase(), v]));
-    const fields = { ...o }; delete fields.name; delete fields.email;
-    return { owner: req.user.id, listId: list._id, name: o.name || "", email: String(o.email || "").toLowerCase(), fields };
-  }).filter((x) => x.email);
-  await Contact.insertMany(docs, { ordered: false }).catch(() => null);
-  res.status(201).json({ list, count: docs.length });
+  const parsed = parseSpreadsheetBufferToRows(req.file.buffer);
+  let count = 0;
+  for (const row of parsed) {
+    let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
+    if (contact) {
+      if (row.name) contact.name = row.name;
+      if (row.phone) contact.phone = row.phone;
+      Object.assign(contact.fields || {}, row.fields || {});
+      await contact.save();
+      await attachContactToList(req.user.id, contact._id, list._id);
+    } else {
+      contact = await Contact.create({
+        owner: req.user.id,
+        name: row.name,
+        email: row.email,
+        phone: row.phone || "",
+        lists: [list._id],
+        fields: row.fields || {},
+      });
+      await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+    }
+    count += 1;
+  }
+  res.status(201).json({ list, count });
 };
 exports.getContacts = async (req, res) => {
   const page = Math.max(parseInt(req.query.page || "1", 10), 1);
@@ -60,17 +105,18 @@ exports.getContacts = async (req, res) => {
   const skip = (page - 1) * limit;
 
   const filter = { owner: req.user.id };
-  if (req.query.listId && req.query.listId !== "all") filter.listId = req.query.listId;
+  if (req.query.listId && req.query.listId !== "all") filter.lists = req.query.listId;
   if (req.query.q) {
     const q = String(req.query.q).trim();
     filter.$or = [
       { name: { $regex: q, $options: "i" } },
       { email: { $regex: q, $options: "i" } },
+      { phone: { $regex: q, $options: "i" } },
     ];
   }
 
   const [items, total] = await Promise.all([
-    Contact.find(filter).populate("listId", "name").sort({ createdAt: -1 }).skip(skip).limit(limit),
+    Contact.find(filter).populate("lists", "name").sort({ createdAt: -1 }).skip(skip).limit(limit),
     Contact.countDocuments(filter),
   ]);
 
@@ -86,6 +132,14 @@ exports.getContacts = async (req, res) => {
     },
   });
 };
+exports.getListById = async (req, res) => {
+  const list = await List.findOne({ _id: req.params.id, owner: req.user.id }).populate({
+    path: "contacts",
+    options: { sort: { createdAt: -1 } },
+  });
+  if (!list) return res.status(404).json({ message: "List not found" });
+  return res.json(list);
+};
 exports.getLists = async (req, res) => res.json(await List.find({ owner: req.user.id }).sort({ createdAt: -1 }));
 exports.createList = async (req, res) => {
   const name = String(req.body.name || "").trim();
@@ -96,30 +150,134 @@ exports.createList = async (req, res) => {
   return res.status(201).json(list);
 };
 exports.addSingleContact = async (req, res) => {
-  const { name, email, listId, listName, fields = {} } = req.body;
+  const { name, email, listId, listName, fields = {}, phone } = req.body;
   if (!email) return res.status(400).json({ message: "Email is required" });
+  const phoneTrim = phone != null ? String(phone).trim() : "";
+  if (!phoneTrim) return res.status(400).json({ message: "Phone is required" });
 
   let resolvedListId = listId;
   if (!resolvedListId) {
     if (!listName) return res.status(400).json({ message: "listId or listName is required" });
-    const name = listName.trim();
-    const list = (await List.findOne({ owner: req.user.id, name })) || (await List.create({ owner: req.user.id, name }));
+    const listLabel = listName.trim();
+    const list =
+      (await List.findOne({ owner: req.user.id, name: listLabel })) ||
+      (await List.create({ owner: req.user.id, name: listLabel }));
     resolvedListId = list._id;
+  } else {
+    const listOk = await List.findOne({ _id: resolvedListId, owner: req.user.id });
+    if (!listOk) return res.status(400).json({ message: "Invalid list" });
   }
 
-  const contact = await Contact.create({
-    owner: req.user.id,
-    name: (name || "").trim(),
-    email: String(email).toLowerCase().trim(),
-    listId: resolvedListId,
-    fields,
-  });
+  const emailNorm = String(email).toLowerCase().trim();
+  let contact = await Contact.findOne({ owner: req.user.id, email: emailNorm });
 
-  return res.status(201).json(contact);
+  if (contact) {
+    contact.name = (name || "").trim() || contact.name;
+    contact.phone = phoneTrim;
+    Object.assign(contact.fields || {}, fields);
+    await contact.save();
+    await attachContactToList(req.user.id, contact._id, resolvedListId);
+  } else {
+    contact = await Contact.create({
+      owner: req.user.id,
+      name: (name || "").trim(),
+      email: emailNorm,
+      phone: phoneTrim,
+      lists: [resolvedListId],
+      fields,
+    });
+    await List.updateOne({ _id: resolvedListId }, { $addToSet: { contacts: contact._id } });
+  }
+
+  const populated = await Contact.findById(contact._id).populate("lists", "name");
+  return res.status(201).json(populated);
 };
+
+exports.bulkContacts = async (req, res) => {
+  try {
+    const listId = String(req.body.listId || "").trim();
+    if (!listId) return res.status(400).json({ message: "listId is required" });
+    if (!req.file?.buffer) return res.status(400).json({ message: "file is required" });
+
+    const list = await List.findOne({ _id: listId, owner: req.user.id });
+    if (!list) return res.status(404).json({ message: "List not found" });
+
+    const parsed = parseSpreadsheetBufferToRows(req.file.buffer);
+    if (!parsed.length) return res.status(400).json({ message: "No valid rows (need email column)" });
+
+    let processed = 0;
+    for (const row of parsed) {
+      let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
+      if (contact) {
+        if (row.name) contact.name = row.name;
+        if (row.phone) contact.phone = row.phone;
+        Object.assign(contact.fields || {}, row.fields || {});
+        await contact.save();
+        await attachContactToList(req.user.id, contact._id, list._id);
+      } else {
+        contact = await Contact.create({
+          owner: req.user.id,
+          name: row.name,
+          email: row.email,
+          phone: row.phone || "",
+          lists: [list._id],
+          fields: row.fields || {},
+        });
+        await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+      }
+      processed += 1;
+    }
+
+    return res.status(201).json({
+      list,
+      count: parsed.length,
+      inserted: processed,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || "Bulk import failed" });
+  }
+};
+
+exports.addContactsToList = async (req, res) => {
+  const listId = req.params.id;
+  const { contactIds } = req.body;
+  if (!Array.isArray(contactIds) || contactIds.length === 0) {
+    return res.status(400).json({ message: "contactIds must be a non-empty array" });
+  }
+
+  const list = await List.findOne({ _id: listId, owner: req.user.id });
+  if (!list) return res.status(404).json({ message: "List not found" });
+
+  let modified = 0;
+  for (const cid of contactIds) {
+    const c = await Contact.findOne({ _id: cid, owner: req.user.id });
+    if (!c) continue;
+    await attachContactToList(req.user.id, c._id, listId);
+    modified += 1;
+  }
+
+  return res.json({ modifiedCount: modified, matchedCount: modified });
+};
+
+exports.updateContact = async (req, res) => {
+  const { name, email, phone } = req.body;
+  const contact = await Contact.findOne({ _id: req.params.id, owner: req.user.id });
+  if (!contact) return res.status(404).json({ message: "Contact not found" });
+
+  if (name != null) contact.name = String(name).trim();
+  if (email != null) contact.email = String(email).toLowerCase().trim();
+  if (phone != null) contact.phone = String(phone).trim();
+  await contact.save();
+
+  const populated = await Contact.findById(contact._id).populate("lists", "name");
+  return res.json(populated);
+};
+
 exports.deleteContact = async (req, res) => {
-  const deleted = await Contact.findOneAndDelete({ _id: req.params.id, owner: req.user.id });
+  const id = req.params.id;
+  const deleted = await Contact.findOneAndDelete({ _id: id, owner: req.user.id });
   if (!deleted) return res.status(404).json({ message: "Contact not found" });
+  await List.updateMany({ contacts: id }, { $pull: { contacts: id } });
   return res.json({ message: "Contact deleted" });
 };
 

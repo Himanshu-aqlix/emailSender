@@ -7,6 +7,7 @@ import ContactsPage from "./pages/ContactsPage";
 import TemplatesPage from "./pages/TemplatesPage";
 import CampaignsPage from "./pages/CampaignsPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
+import ListDetailPage from "./pages/ListDetailPage";
 import "./App.css";
 
 const Protected = ({ children }) => (localStorage.getItem("token") ? children : <Navigate to="/" replace />);
@@ -26,6 +27,7 @@ export default function App() {
       >
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="contacts" element={<ContactsPage />} />
+        <Route path="lists/:id" element={<ListDetailPage />} />
         <Route path="templates" element={<TemplatesPage />} />
         <Route path="campaigns" element={<CampaignsPage />} />
         <Route path="analytics" element={<AnalyticsPage />} />

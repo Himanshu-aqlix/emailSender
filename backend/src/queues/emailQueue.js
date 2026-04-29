@@ -31,7 +31,7 @@ const processCampaign = async (job) => {
   const campaign = await Campaign.findById(job.data.campaignId);
   if (!campaign) return;
   const template = await Template.findById(campaign.templateId);
-  const contacts = await Contact.find({ owner: campaign.owner, listId: campaign.listId });
+  const contacts = await Contact.find({ owner: campaign.owner, lists: campaign.listId });
   campaign.status = "sending";
   await campaign.save();
   for (const c of contacts) {
@@ -44,7 +44,7 @@ const processCampaign = async (job) => {
     const log = await EmailLog.create({ owner: campaign.owner, email: c.email, campaignId: campaign._id });
     try {
       const allowSmtpFallback = process.env.ALLOW_SMTP_FALLBACK !== "false";
-      const vars = { name: c.name, email: c.email, ...c.fields };
+      const vars = { name: c.name, email: c.email, phone: c.phone || "", ...c.fields };
       const bodyHtml = replaceVariables(template.html, vars);
       const trackedHtml = injectTracking({ html: bodyHtml, campaignId: campaign._id, email: c.email, logId: log._id });
       const subject = replaceVariables(template.subject, vars);

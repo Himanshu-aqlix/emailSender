@@ -3,10 +3,11 @@ const mongoose = require("mongoose");
 const ContactSchema = new mongoose.Schema(
   {
     owner: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-    name: { type: String, trim: true },
+    name: { type: String, trim: true, default: "" },
     email: { type: String, required: true, lowercase: true, trim: true },
+    phone: { type: String, trim: true, default: "" },
+    lists: [{ type: mongoose.Schema.Types.ObjectId, ref: "List", index: true }],
     fields: { type: mongoose.Schema.Types.Mixed, default: {} },
-    listId: { type: mongoose.Schema.Types.ObjectId, ref: "List", required: true, index: true },
   },
   { timestamps: true }
 );
