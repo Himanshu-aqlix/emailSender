@@ -19,7 +19,7 @@ const getClient = () => {
   return client;
 };
 
-const sendEmailBrevo = async ({ to, subject, html, tags, headers }) => {
+const sendEmailBrevo = async ({ to, subject, html, tags, headers, attachments }) => {
   try {
     const api = getClient();
     if (!api) {
@@ -34,6 +34,7 @@ const sendEmailBrevo = async ({ to, subject, html, tags, headers }) => {
       to: [{ email: String(to || "").trim() }],
       subject,
       htmlContent: html,
+      ...(Array.isArray(attachments) && attachments.length ? { attachment: attachments } : {}),
       ...(Array.isArray(tags) && tags.length ? { tags } : {}),
       ...(headers && typeof headers === "object" ? { headers } : {}),
     });

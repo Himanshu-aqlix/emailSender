@@ -17,6 +17,9 @@ const safeDecode = (value = "") => {
   }
 };
 
+const isValidObjectId = (v) => typeof v === "string" && v.length === 24;
+const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim().toLowerCase());
+
 router.get("/api/track/open/:campaignId/:email", async (req, res) => {
   try {
     const campaignId = String(req.params.campaignId || "");
@@ -44,25 +47,32 @@ router.get("/api/track/open/:campaignId/:email", async (req, res) => {
 });
 
 router.get("/api/track/click", async (req, res) => {
-  const campaignId = String(req.query.cid || "");
-  const email = safeDecode(req.query.email).toLowerCase();
+  const campaignId = String(req.query.campaignId || req.query.cid || "");
+  const email = safeDecode(req.query.email).toLowerCase().trim();
   const logId = String(req.query.logId || "");
   const fallback = process.env.CLIENT_URL || "http://localhost:5173";
   let redirectUrl = fallback;
 
-  const rawUrl = String(req.query.url || "");
+  const rawUrl = String(req.query.redirect || req.query.url || "");
   if (rawUrl) redirectUrl = safeDecode(rawUrl) || fallback;
+
+  if (!campaignId || !email || !isValidEmail(email)) {
+    console.warn("[tracking] click skipped invalid params", { campaignId, email, logId });
+    return res.redirect(redirectUrl || fallback);
+  }
 
   try {
     let log = null;
-    if (logId && logId.length === 24) {
+    if (isValidObjectId(logId)) {
       log = await EmailLog.findById(logId).catch(() => null);
     }
-    if (!log && campaignId && email) {
+    if (!log) {
       log = await EmailLog.findOne({ campaignId, email }).catch(() => null);
     }
     if (log) {
       await recordTrackingEngagement(log._id, "clicked");
+    } else {
+      console.warn("[tracking] click not matched to EmailLog", { campaignId, email, logId });
     }
     if (log && hasClickCount && campaignId) {
       await Campaign.updateOne({ _id: campaignId }, { $inc: { clickCount: 1 } }).catch(() => null);

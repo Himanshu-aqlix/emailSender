@@ -1,4 +1,6 @@
 const Bull = require("bull");
+const fs = require("fs/promises");
+const path = require("path");
 const { redisConfig, queueEnabled } = require("../config/redis");
 const Contact = require("../models/Contact");
 const Campaign = require("../models/Campaign");
@@ -14,6 +16,26 @@ let queue = queueEnabled ? new Bull("campaign-queue", { redis: redisConfig }) : 
 let queueFailed = false;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const buildEmailAttachments = async (template) => {
+  const raw = Array.isArray(template?.attachments) ? template.attachments : [];
+  const brevoAttachments = [];
+  const smtpAttachments = [];
+  for (const item of raw) {
+    const diskPath = String(item?.path || "").trim();
+    const name = String(item?.name || "attachment").trim() || "attachment";
+    if (!diskPath) continue;
+    const absolute = path.isAbsolute(diskPath) ? diskPath : path.join(process.cwd(), diskPath);
+    try {
+      const fileBuffer = await fs.readFile(absolute);
+      brevoAttachments.push({ name, content: fileBuffer.toString("base64") });
+      smtpAttachments.push({ filename: name, content: fileBuffer });
+    } catch (e) {
+      console.warn(`[email] attachment skipped (${name}):`, e?.message || e);
+    }
+  }
+  return { brevoAttachments, smtpAttachments };
+};
 
 const isBrevoRateLimit = (error) => {
   const status =
@@ -49,6 +71,7 @@ const processCampaign = async (job) => {
       const bodyHtml = replaceVariables(template.html, vars);
       const trackedHtml = injectTracking({ html: bodyHtml, campaignId: campaign._id, email: c.email, logId: log._id });
       const subject = replaceVariables(template.subject, vars);
+      const { brevoAttachments, smtpAttachments } = await buildEmailAttachments(template);
 
       try {
         try {
@@ -57,6 +80,7 @@ const processCampaign = async (job) => {
             subject,
             html: trackedHtml,
             tags: [`campaign:${String(campaign._id)}`, `cid:${String(campaign._id)}`, `log:${String(log._id)}`],
+            attachments: brevoAttachments,
           });
         } catch (brevoError) {
           if (isBrevoRateLimit(brevoError)) {
@@ -67,6 +91,7 @@ const processCampaign = async (job) => {
               subject,
               html: trackedHtml,
               tags: [`campaign:${String(campaign._id)}`, `cid:${String(campaign._id)}`, `log:${String(log._id)}`],
+              attachments: brevoAttachments,
             });
           } else {
             throw brevoError;
@@ -77,7 +102,7 @@ const processCampaign = async (job) => {
         if (!allowSmtpFallback) {
           throw brevoError;
         }
-        await sendEmail({ to: c.email, subject, html: trackedHtml });
+        await sendEmail({ to: c.email, subject, html: trackedHtml, attachments: smtpAttachments });
         console.warn(`[email] Fallback send succeeded for ${c.email}`);
       }
 

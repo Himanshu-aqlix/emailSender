@@ -1,8 +1,49 @@
-const baseUrl = process.env.API_BASE_URL .replace(/\/+$/, "");
+const resolveBaseUrl = () => {
+  const fromEnv = process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || process.env.SERVER_PUBLIC_URL;
+  if (fromEnv && String(fromEnv).trim()) return String(fromEnv).trim().replace(/\/+$/, "");
+  return "http://localhost:5000";
+};
+
+const baseUrl = resolveBaseUrl();
 
 const OPEN_MARKER = "data-track-open=\"1\"";
 const CLICK_MARKER = "data-track-click=\"1\"";
 const UNSUB_MARKER = "data-track-unsubscribe=\"1\"";
+
+const TEXT_URL_REGEX = /(^|[\s>(\["'])((?:https?:\/\/)[^\s<>"')\]]+)/gi;
+
+const linkifyPlainUrls = (html = "") => {
+  const source = String(html || "");
+  if (!source) return source;
+
+  const parts = source.split(/(<[^>]+>)/g);
+  let insideAnchor = false;
+  let insideScript = false;
+  let insideStyle = false;
+
+  return parts
+    .map((part) => {
+      if (!part) return part;
+      if (part.startsWith("<")) {
+        const tagNameMatch = part.match(/^<\s*\/?\s*([a-z0-9:-]+)/i);
+        const tagName = (tagNameMatch?.[1] || "").toLowerCase();
+        const isClosing = /^<\s*\//.test(part);
+
+        if (tagName === "a") insideAnchor = !isClosing;
+        if (tagName === "script") insideScript = !isClosing;
+        if (tagName === "style") insideStyle = !isClosing;
+        return part;
+      }
+
+      if (insideAnchor || insideScript || insideStyle) return part;
+
+      return part.replace(TEXT_URL_REGEX, (full, lead, url) => {
+        if (!url) return full;
+        return `${lead}<a href="${url}">${url}</a>`;
+      });
+    })
+    .join("");
+};
 
 const injectTracking = ({ html, campaignId, email, logId }) => {
   try {
@@ -13,7 +54,7 @@ const injectTracking = ({ html, campaignId, email, logId }) => {
 
     if (!safeHtml || !cid || !em) return safeHtml;
 
-    let tracked = safeHtml;
+    let tracked = linkifyPlainUrls(safeHtml);
 
     if (!tracked.includes(CLICK_MARKER)) {
       const anchorRegex = /<a\b([^>]*?)\bhref=(["'])(.*?)\2([^>]*)>/gi;
@@ -24,8 +65,7 @@ const injectTracking = ({ html, campaignId, email, logId }) => {
         if (url.includes("/api/track/click")) return full;
 
         const logPart = lid ? `&logId=${lid}` : "";
-        const trackedUrl =
-          `${baseUrl}/api/track/click?cid=${cid}&email=${em}${logPart}&url=${encodeURIComponent(url)}`;
+        const trackedUrl = `${baseUrl}/api/track/click?campaignId=${cid}&email=${em}${logPart}&redirect=${encodeURIComponent(url)}`;
         return `<a${preAttrs}href="${trackedUrl}" ${CLICK_MARKER}${postAttrs}>`;
       });
     }

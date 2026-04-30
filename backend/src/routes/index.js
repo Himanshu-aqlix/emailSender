@@ -14,6 +14,8 @@ router.post("/api/auth/register", [body("email").isEmail(), body("password").isL
 router.post("/api/auth/login", [body("email").isEmail(), body("password").isLength({ min: 6 })], c.login);
 router.get("/api/auth/me", auth, c.me);
 router.post("/api/upload", auth, upload.single("file"), c.uploadExcel);
+router.post("/api/uploads/image", auth, upload.single("file"), c.uploadTemplateImage);
+router.post("/api/uploads/attachment", auth, upload.single("file"), c.uploadTemplateAttachment);
 router.get("/api/contacts", auth, c.getContacts);
 router.post("/api/contacts", auth, c.addSingleContact);
 router.post("/api/contacts/bulk", auth, upload.single("file"), c.bulkContacts);
@@ -41,6 +43,8 @@ router.get("/api/campaigns/:id/recipient/:email/timeline", auth, c.getCampaignRe
 router.get("/api/stats", auth, c.getStats);
 router.get("/api/dashboard/stats", auth, c.getDashboardStats);
 router.get("/dashboard/stats", auth, c.getDashboardStats);
+router.get("/api/dashboard/summary", auth, c.getDashboardSummary);
+router.get("/dashboard/summary", auth, c.getDashboardSummary);
 router.get("/api/logs", auth, c.getLogs);
 router.get("/track/open/:id", c.trackOpen);
 router.get("/track/click/:id", c.trackClick);

@@ -2,18 +2,20 @@ import { useEffect, useState, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import DOMPurify from "dompurify";
 import { Clock3, Eye, FileText, Plus, Save, Trash2 } from "lucide-react";
-import { createTemplate, deleteTemplate, getTemplates, updateTemplate } from "../services/templateService";
+import {
+  createTemplate,
+  deleteTemplate,
+  getTemplates,
+  updateTemplate,
+  uploadTemplateAttachment,
+  uploadTemplateImage,
+} from "../services/templateService";
 import TemplatePreview from "../components/TemplatePreview";
 import EmailEditor from "../components/EmailEditor";
 
-const defaultHtmlContent = `<div style="font-family:Arial,sans-serif;padding:24px;background:#fff">
-  <h1 style="color:#d94a27">Hi {{name}},</h1>
-  <p>Welcome aboard! We're thrilled to have you at <strong>{{company}}</strong>.</p>
-  <p><a href="https://example.com/start" style="background:#d94a27;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Get started</a></p>
-  <p style="color:#888;font-size:12px">- The Team</p>
-</div>`;
-const defaultTemplateName = "Welcome Email";
-const defaultTemplateSubject = "Welcome to {{company}}, {{name}}!";
+const defaultHtmlContent = "";
+const defaultTemplateName = "";
+const defaultTemplateSubject = "";
 
 export default function TemplatesPage() {
   const completionDisposableRef = useRef(null);
@@ -26,6 +28,62 @@ export default function TemplatesPage() {
   const [name, setName] = useState(defaultTemplateName);
   const [subject, setSubject] = useState(defaultTemplateSubject);
   const [htmlContent, setHtmlContent] = useState(defaultHtmlContent);
+  const [attachments, setAttachments] = useState([]);
+  const attachmentInputRef = useRef(null);
+
+  const dataUrlToFile = (dataUrl, idx = 0) => {
+    const arr = String(dataUrl || "").split(",");
+    if (arr.length < 2) throw new Error("Invalid data URL");
+    const mimeMatch = arr[0].match(/data:([^;]+);base64/i);
+    const mime = mimeMatch?.[1] || "image/png";
+    const binary = atob(arr[1]);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const ext = (mime.split("/")[1] || "png").replace(/[^a-z0-9]/gi, "").toLowerCase() || "png";
+    return new File([bytes], `inline-image-${Date.now()}-${idx}.${ext}`, { type: mime });
+  };
+
+  const replaceInlineImagesWithPublicUrls = async (html) => {
+    const input = String(html || "");
+    if (!input || (!input.includes("blob:") && !input.includes("data:image"))) return input;
+    const root = document.createElement("div");
+    root.innerHTML = input;
+    const nodes = Array.from(root.querySelectorAll("img[src]"));
+    const targets = nodes.filter((img) => {
+      const src = String(img.getAttribute("src") || "");
+      return src.startsWith("blob:") || src.startsWith("data:image");
+    });
+    if (!targets.length) return input;
+
+    const cache = new Map();
+    for (let i = 0; i < targets.length; i += 1) {
+      const node = targets[i];
+      const src = String(node.getAttribute("src") || "");
+      if (!src) continue;
+      if (cache.has(src)) {
+        node.setAttribute("src", cache.get(src));
+        continue;
+      }
+
+      let file;
+      if (src.startsWith("data:image")) {
+        file = dataUrlToFile(src, i);
+      } else {
+        const blobRes = await fetch(src);
+        const blob = await blobRes.blob();
+        const mime = blob.type || "image/png";
+        const ext = (mime.split("/")[1] || "png").replace(/[^a-z0-9]/gi, "").toLowerCase() || "png";
+        file = new File([blob], `template-image-${Date.now()}-${i}.${ext}`, { type: mime });
+      }
+
+      const uploadRes = await uploadTemplateImage(file);
+      const url = uploadRes?.data?.url;
+      if (!url) throw new Error("Image upload failed");
+      cache.set(src, url);
+      node.setAttribute("src", url);
+    }
+    return root.innerHTML;
+  };
 
   /** @param {string} [preferredTemplateId] — pass after save so we select the saved row (fixes stale closure with new templates). */
   const load = (preferredTemplateId) =>
@@ -41,6 +99,7 @@ export default function TemplatesPage() {
       setName(current.name);
       setSubject(current.subject);
       setHtmlContent(current.html);
+      setAttachments(Array.isArray(current.attachments) ? current.attachments : []);
     });
 
   useEffect(() => {
@@ -52,15 +111,18 @@ export default function TemplatesPage() {
     setName(t.name);
     setSubject(t.subject);
     setHtmlContent(t.html);
+    setAttachments(Array.isArray(t.attachments) ? t.attachments : []);
   };
 
   const onNew = () => {
     setError("");
     setNotice("");
     setActiveId("");
+    setTab("wysiwyg");
     setName(defaultTemplateName);
     setSubject(defaultTemplateSubject);
     setHtmlContent(defaultHtmlContent);
+    setAttachments([]);
   };
 
   const save = async () => {
@@ -81,13 +143,16 @@ export default function TemplatesPage() {
     setNotice("");
 
     try {
+      payload.html = await replaceInlineImagesWithPublicUrls(payload.html);
+      payload.attachments = attachments;
       const { data: saved } = activeId
         ? await updateTemplate(activeId, payload)
         : await createTemplate(payload);
       setActiveId(saved._id);
-      setHtmlContent(saved.html ?? htmlContent.trim());
+      setHtmlContent(saved.html ?? payload.html);
       setName(saved.name?.trim() ?? payload.name);
       setSubject(saved.subject?.trim() ?? payload.subject);
+      setAttachments(Array.isArray(saved.attachments) ? saved.attachments : attachments);
       await load(saved._id);
       setNotice("Template saved successfully.");
     } catch (e) {
@@ -112,6 +177,32 @@ export default function TemplatesPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const onPickAttachment = () => {
+    attachmentInputRef.current?.click();
+  };
+
+  const onAttachmentSelected = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await uploadTemplateAttachment(file);
+      const item = res?.data?.attachment;
+      if (!item?.url) throw new Error("Attachment upload failed");
+      setAttachments((prev) => [...prev, item]);
+      setNotice("Attachment uploaded.");
+    } catch (e) {
+      setError(e?.response?.data?.message || e?.message || "Unable to upload attachment.");
+      setNotice("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeAttachment = (idx) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const editorOptions = {
@@ -248,6 +339,9 @@ export default function TemplatesPage() {
               </button>
             </div>
             <div className="row actions-right">
+              <button className="ghost-btn" onClick={onPickAttachment} disabled={busy}>
+                + Attachment
+              </button>
               <button className="ghost-btn" onClick={remove} disabled={busy || !activeId}>
                 <Trash2 size={14} /> Delete
               </button>
@@ -258,6 +352,18 @@ export default function TemplatesPage() {
           </div>
           {error ? <p className="auth-error">{error}</p> : null}
           {notice ? <p className="helper">{notice}</p> : null}
+          {attachments.length ? (
+            <div className="template-attachments">
+              {attachments.map((a, idx) => (
+                <div key={`${a.url}-${idx}`} className="template-attachment-chip">
+                  <span title={a.name}>{a.name}</span>
+                  <button type="button" className="delete-btn" onClick={() => removeAttachment(idx)}>
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {tab === "html" ? (
             <Editor
               height="430px"
@@ -279,6 +385,18 @@ export default function TemplatesPage() {
 
         <TemplatePreview subject={subject} html={htmlContent} />
       </div>
+      <input
+        ref={attachmentInputRef}
+        type="file"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) onAttachmentSelected(file);
+          e.target.value = "";
+        }}
+        style={{ display: "none" }}
+        tabIndex={-1}
+        aria-hidden="true"
+      />
     </section>
   );
 }

@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Bar, Line } from "react-chartjs-2";
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend } from "chart.js";
 import { AlertTriangle, CheckCircle2, ChevronRight, Eye, RefreshCw, Send, Sparkles, Users } from "lucide-react";
-import { getCampaigns } from "../services/campaignService";
-import { getContacts } from "../services/contactService";
-import { getDashboardStats } from "../services/statsService";
+import { getDashboardSummary } from "../services/statsService";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend);
 
@@ -72,45 +70,23 @@ export default function DashboardPage() {
   const [audienceRows, setAudienceRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const inFlightRef = useRef(false);
 
   const fetchDashboard = useCallback(async (silent = false) => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     if (silent) setRefreshing(true);
     else setLoading(true);
     try {
-      const [statsRes, campaignsRes, contactsRes] = await Promise.all([
-        getDashboardStats(),
-        getCampaigns({ page: 1, limit: 4 }),
-        getContacts("page=1&limit=500"),
-      ]);
-      setStats({ ...DEFAULT_DASHBOARD, ...(statsRes?.data || {}) });
-      const campData = campaignsRes?.data || {};
-      setCampaigns((campData.items || []).slice(0, 4));
-
-      const contactsData = contactsRes?.data || {};
-      const items = contactsData.items || contactsData;
-      const totalFromPagination = contactsData.pagination?.total;
-      setContactsCount(typeof totalFromPagination === "number" ? totalFromPagination : Array.isArray(items) ? items.length : 0);
-
-      if (Array.isArray(items)) {
-        const map = new Map();
-        items.forEach((contact) => {
-          const refs = Array.isArray(contact?.lists) ? contact.lists : [];
-          refs.forEach((ref) => {
-            const id = String(ref?._id || ref || "");
-            if (!id) return;
-            const name = ref?.name || `List ${id.slice(-4)}`;
-            const prev = map.get(id) || { id, name, count: 0 };
-            prev.count += 1;
-            map.set(id, prev);
-          });
-        });
-        setAudienceRows(Array.from(map.values()).sort((a, b) => b.count - a.count).slice(0, 5));
-      } else {
-        setAudienceRows([]);
-      }
+      const { data } = await getDashboardSummary();
+      setStats({ ...DEFAULT_DASHBOARD, ...(data || {}) });
+      setCampaigns(Array.isArray(data?.campaigns) ? data.campaigns : []);
+      setContactsCount(Number(data?.contactsCount || 0));
+      setAudienceRows(Array.isArray(data?.audienceRows) ? data.audienceRows : []);
     } catch {
       // keep previous data
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
       setRefreshing(false);
     }
@@ -121,7 +97,10 @@ export default function DashboardPage() {
   }, [fetchDashboard]);
 
   useEffect(() => {
-    const id = setInterval(() => fetchDashboard(true), 10000);
+    const id = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      fetchDashboard(true);
+    }, 30000);
     return () => clearInterval(id);
   }, [fetchDashboard]);
 
@@ -318,7 +297,7 @@ export default function DashboardPage() {
       <h2 className="dashboard-title">Dashboard</h2>
       <p className="dashboard-subtitle">Overview of your email marketing performance.</p>
       <div className="dashboard-live-row">
-        <small>Auto-refresh every 10 seconds</small>
+        <small>Auto-refresh every 30 seconds (active tab only)</small>
         <button type="button" className="ghost-btn dashboard-refresh-btn" disabled={refreshing} onClick={() => fetchDashboard(true)}>
           <RefreshCw size={14} className={refreshing ? "campaign-refresh-spin" : ""} />
           {refreshing ? "Refreshing..." : "Refresh"}

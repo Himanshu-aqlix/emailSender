@@ -1,6 +1,9 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const xlsx = require("xlsx");
+const fs = require("fs/promises");
+const path = require("path");
+const crypto = require("crypto");
 const { sanitizeTemplateHtml } = require("../utils/sanitizeTemplateHtml");
 const User = require("../models/User");
 const List = require("../models/List");
@@ -41,6 +44,19 @@ const parseSpreadsheetBufferToRows = (buffer) => {
       };
     })
     .filter((x) => x.email);
+};
+
+const normalizeTemplateAttachments = (raw) => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => ({
+      name: String(item?.name || "").trim(),
+      url: String(item?.url || "").trim(),
+      path: String(item?.path || "").trim(),
+      mimeType: String(item?.mimeType || "").trim(),
+      size: Number(item?.size || 0),
+    }))
+    .filter((a) => a.name && a.url && a.path);
 };
 
 exports.register = async (req, res) => {
@@ -99,6 +115,52 @@ exports.uploadExcel = async (req, res) => {
     count += 1;
   }
   res.status(201).json({ list, count });
+};
+exports.uploadTemplateImage = async (req, res) => {
+  if (!req.file?.buffer) return res.status(400).json({ message: "Image file is required" });
+  const mime = String(req.file.mimetype || "").toLowerCase();
+  if (!mime.startsWith("image/")) return res.status(400).json({ message: "Only image files are allowed" });
+
+  const uploadsDir = path.join(__dirname, "..", "public", "uploads");
+  await fs.mkdir(uploadsDir, { recursive: true });
+
+  const ext = (mime.split("/")[1] || "png").replace(/[^a-z0-9]/gi, "").toLowerCase() || "png";
+  const filename = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}.${ext}`;
+  const filepath = path.join(uploadsDir, filename);
+  await fs.writeFile(filepath, req.file.buffer);
+
+  const base =
+    (process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || `${req.protocol}://${req.get("host")}`).replace(/\/+$/, "");
+  return res.status(201).json({ url: `${base}/uploads/${filename}`, filename });
+};
+exports.uploadTemplateAttachment = async (req, res) => {
+  if (!req.file?.buffer) return res.status(400).json({ message: "Attachment file is required" });
+  const maxSizeBytes = 10 * 1024 * 1024;
+  if (Number(req.file.size || 0) > maxSizeBytes) {
+    return res.status(400).json({ message: "Attachment exceeds 10MB limit" });
+  }
+
+  const attachmentsDir = path.join(__dirname, "..", "public", "uploads", "attachments");
+  await fs.mkdir(attachmentsDir, { recursive: true });
+
+  const originalName = String(req.file.originalname || "attachment").trim() || "attachment";
+  const ext = (path.extname(originalName) || "").replace(/[^.a-z0-9]/gi, "").toLowerCase();
+  const baseName = path.basename(originalName, ext).replace(/[^a-z0-9-_]/gi, "_").slice(0, 60) || "file";
+  const filename = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}-${baseName}${ext}`;
+  const diskPath = path.join(attachmentsDir, filename);
+  await fs.writeFile(diskPath, req.file.buffer);
+
+  const base =
+    (process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || `${req.protocol}://${req.get("host")}`).replace(/\/+$/, "");
+  return res.status(201).json({
+    attachment: {
+      name: originalName,
+      url: `${base}/uploads/attachments/${filename}`,
+      path: diskPath,
+      mimeType: String(req.file.mimetype || ""),
+      size: Number(req.file.size || 0),
+    },
+  });
 };
 exports.getContacts = async (req, res) => {
   const page = Math.max(parseInt(req.query.page || "1", 10), 1);
@@ -377,6 +439,7 @@ exports.createTemplate = async (req, res) => {
     name: req.body.name,
     subject: req.body.subject,
     html: sanitizeTemplateHtml(req.body.html),
+    attachments: normalizeTemplateAttachments(req.body.attachments),
   });
   res.status(201).json(t);
 };
@@ -388,6 +451,7 @@ exports.updateTemplate = async (req, res) => {
       name: req.body.name,
       subject: req.body.subject,
       html: sanitizeTemplateHtml(req.body.html),
+      attachments: normalizeTemplateAttachments(req.body.attachments),
     },
     { new: true }
   );
@@ -807,6 +871,135 @@ exports.getDashboardStats = async (req, res) => {
     clickRate,
     weeklyStats,
     campaignStats,
+  });
+};
+
+exports.getDashboardSummary = async (req, res) => {
+  const owner = req.user.id;
+
+  const campaignsPromise = Campaign.find({ owner })
+    .populate("templateId", "name")
+    .populate("listId", "name")
+    .populate("listIds", "name")
+    .sort({ createdAt: -1 })
+    .limit(4)
+    .lean();
+
+  const contactsPromise = Contact.find({ owner })
+    .populate("lists", "name")
+    .select("lists")
+    .limit(500)
+    .lean();
+
+  const [stats, campaigns, contacts] = await Promise.all([
+    (async () => {
+      const campaignIds = (await Campaign.find({ owner }).select("_id").lean()).map((c) => c._id);
+      const [totalSent, totalOpened, totalClicked, totalBounced] = await Promise.all([
+        EmailLog.countDocuments({ owner }),
+        EmailLog.countDocuments({ owner, opened: true }),
+        EmailLog.countDocuments({ owner, clicked: true }),
+        EmailLog.countDocuments({ owner, status: "bounced" }),
+      ]);
+      const deliveredStatuses = ["delivered", "opened", "clicked"];
+      const totalDelivered = await EmailLog.countDocuments({ owner, status: { $in: deliveredStatuses } });
+      const openRate = totalDelivered ? Number(((totalOpened / totalDelivered) * 100).toFixed(2)) : 0;
+      const clickRate = totalDelivered ? Number(((totalClicked / totalDelivered) * 100).toFixed(2)) : 0;
+
+      const now = new Date();
+      const endUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+      const startUtc = new Date(endUtc);
+      startUtc.setUTCDate(startUtc.getUTCDate() - 6);
+      startUtc.setUTCHours(0, 0, 0, 0);
+
+      const weeklyAgg = await EventLog.aggregate([
+        {
+          $match: {
+            campaignId: { $in: campaignIds },
+            timestamp: { $gte: startUtc, $lte: endUtc },
+          },
+        },
+        {
+          $group: {
+            _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
+            sent: { $sum: { $cond: [{ $eq: ["$eventType", "sent"] }, 1, 0] } },
+            opened: { $sum: { $cond: [{ $eq: ["$eventType", "opened"] }, 1, 0] } },
+            clicked: { $sum: { $cond: [{ $eq: ["$eventType", "clicked"] }, 1, 0] } },
+          },
+        },
+      ]);
+
+      const days = [];
+      for (let i = 0; i < 7; i += 1) {
+        const d = new Date(startUtc);
+        d.setUTCDate(d.getUTCDate() + i);
+        days.push(d.toISOString().slice(0, 10));
+      }
+      const weeklyByDay = Object.fromEntries(weeklyAgg.map((x) => [x._id, x]));
+      const weeklyStats = days.map((date) => {
+        const row = weeklyByDay[date] || {};
+        return {
+          date,
+          sent: row.sent || 0,
+          opened: row.opened || 0,
+          clicked: row.clicked || 0,
+        };
+      });
+
+      const campaignAgg = await EventLog.aggregate([
+        { $match: { campaignId: { $in: campaignIds } } },
+        {
+          $group: {
+            _id: "$campaignId",
+            opened: { $sum: { $cond: [{ $eq: ["$eventType", "opened"] }, 1, 0] } },
+            clicked: { $sum: { $cond: [{ $eq: ["$eventType", "clicked"] }, 1, 0] } },
+          },
+        },
+        { $sort: { opened: -1, clicked: -1 } },
+        { $limit: 8 },
+      ]);
+
+      const campaignNameMap = new Map((await Campaign.find({ owner }).select("_id name").lean()).map((c) => [String(c._id), c.name]));
+      const campaignStats = campaignAgg.map((row) => ({
+        campaignId: row._id,
+        campaignName: campaignNameMap.get(String(row._id)) || "Untitled campaign",
+        opened: row.opened || 0,
+        clicked: row.clicked || 0,
+      }));
+
+      return {
+        totalSent,
+        totalDelivered,
+        totalOpened,
+        totalClicked,
+        totalBounced,
+        openRate,
+        clickRate,
+        weeklyStats,
+        campaignStats,
+      };
+    })(),
+    campaignsPromise,
+    contactsPromise,
+  ]);
+
+  const audienceMap = new Map();
+  contacts.forEach((contact) => {
+    const refs = Array.isArray(contact?.lists) ? contact.lists : [];
+    refs.forEach((ref) => {
+      const id = String(ref?._id || ref || "");
+      if (!id) return;
+      const name = ref?.name || `List ${id.slice(-4)}`;
+      const prev = audienceMap.get(id) || { id, name, count: 0 };
+      prev.count += 1;
+      audienceMap.set(id, prev);
+    });
+  });
+
+  return res.json({
+    ...stats,
+    campaigns,
+    contactsCount: contacts.length,
+    audienceRows: Array.from(audienceMap.values()).sort((a, b) => b.count - a.count).slice(0, 5),
   });
 };
 exports.getLogs = async (req, res) =>

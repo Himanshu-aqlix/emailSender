@@ -10,12 +10,12 @@ const smtpTransporter = nodemailer.createTransport({
   auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined,
 });
 
-const sendEmail = async ({ to, subject, html }) => {
+const sendEmail = async ({ to, subject, html, attachments }) => {
   if (process.env.USE_SENDGRID === "true" && process.env.SENDGRID_API_KEY) {
-    await sgMail.send({ to, from: process.env.MAIL_FROM, subject, html });
+    await sgMail.send({ to, from: process.env.MAIL_FROM, subject, html, attachments });
     return;
   }
-  await smtpTransporter.sendMail({ to, from: process.env.MAIL_FROM, subject, html });
+  await smtpTransporter.sendMail({ to, from: process.env.MAIL_FROM, subject, html, attachments });
 };
 
 module.exports = { sendEmail };
