@@ -52,6 +52,15 @@ export default function ContactsPage() {
   };
   useEffect(() => { load(); }, [page, query, activeList]);
   useEffect(() => {
+    const onRefresh = () => {
+      setActiveList("all");
+      setPage(1);
+      load();
+    };
+    window.addEventListener("contacts:refresh", onRefresh);
+    return () => window.removeEventListener("contacts:refresh", onRefresh);
+  }, []);
+  useEffect(() => {
     if (showImportModal) setImportSelectedFile(null);
   }, [showImportModal]);
   useEffect(() => {

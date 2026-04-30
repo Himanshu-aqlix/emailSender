@@ -23,6 +23,8 @@ router.delete("/api/contacts/:id", auth, c.deleteContact);
 router.get("/api/lists", auth, c.getLists);
 router.get("/api/lists/:id", auth, c.getListById);
 router.post("/api/lists", auth, c.createList);
+router.patch("/api/lists/:id", auth, c.renameList);
+router.delete("/api/lists/:id", auth, c.deleteList);
 router.put("/api/lists/:id/add-contacts", auth, c.addContactsToList);
 router.post("/api/templates", auth, c.createTemplate);
 router.get("/api/templates", auth, c.getTemplates);

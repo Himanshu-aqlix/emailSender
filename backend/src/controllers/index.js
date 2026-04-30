@@ -150,6 +150,40 @@ exports.createList = async (req, res) => {
   const list = await List.create({ owner: req.user.id, name });
   return res.status(201).json(list);
 };
+exports.renameList = async (req, res) => {
+  const listId = String(req.params.id || "").trim();
+  const name = String(req.body.name || "").trim();
+  if (!name) return res.status(400).json({ message: "List name is required" });
+
+  const list = await List.findOne({ _id: listId, owner: req.user.id });
+  if (!list) return res.status(404).json({ message: "List not found" });
+
+  const duplicate = await List.findOne({ owner: req.user.id, name, _id: { $ne: listId } });
+  if (duplicate) return res.status(409).json({ message: "A list with this name already exists" });
+
+  list.name = name;
+  await list.save();
+  return res.json(list);
+};
+exports.deleteList = async (req, res) => {
+  const listId = String(req.params.id || "").trim();
+  const list = await List.findOne({ _id: listId, owner: req.user.id }).select("_id name contacts");
+  if (!list) return res.status(404).json({ message: "List not found" });
+
+  const contactsInList = await Contact.find({ owner: req.user.id, lists: list._id }).select("_id");
+  const contactIds = contactsInList.map((c) => c._id);
+  if (contactIds.length) {
+    await Contact.deleteMany({ owner: req.user.id, _id: { $in: contactIds } });
+    await List.updateMany({ owner: req.user.id }, { $pull: { contacts: { $in: contactIds } } });
+  }
+
+  await List.deleteOne({ _id: listId, owner: req.user.id });
+  return res.json({
+    message: "List deleted successfully",
+    deletedListId: listId,
+    deletedContacts: contactIds.length,
+  });
+};
 exports.addSingleContact = async (req, res) => {
   const { name, email, listId, listName, fields = {}, phone } = req.body;
   if (!email) return res.status(400).json({ message: "Email is required" });
