@@ -8,6 +8,7 @@ const Contact = require("../models/Contact");
 const Template = require("../models/Template");
 const Campaign = require("../models/Campaign");
 const EmailLog = require("../models/EmailLog");
+const EventLog = require("../models/EventLog");
 const { enqueueCampaign } = require("../queues/emailQueue");
 
 const sign = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
@@ -456,16 +457,91 @@ exports.getCampaignDetails = async (req, res) => {
     .populate("listIds", "name");
   if (!campaign) return res.status(404).json({ message: "Campaign not found" });
 
-  const logs = await EmailLog.find({ owner: req.user.id, campaignId: campaign._id })
-    .sort({ sentAt: -1, createdAt: -1 })
+  const campaignOid = campaign._id;
+
+  const countAgg = await EventLog.aggregate([
+    { $match: { campaignId: campaignOid } },
+    { $group: { _id: "$eventType", count: { $sum: 1 } } },
+  ]);
+  const eventCountsRaw = {};
+  countAgg.forEach((x) => {
+    eventCountsRaw[x._id] = x.count;
+  });
+
+  const bounceUnion =
+    (eventCountsRaw.hard_bounce || 0) +
+    (eventCountsRaw.soft_bounce || 0) +
+    (eventCountsRaw.hard_bounced || 0) +
+    (eventCountsRaw.soft_bounced || 0) +
+    (eventCountsRaw.bounced || 0);
+
+  const eventCounts = {
+    delivered: eventCountsRaw.delivered || 0,
+    opened: eventCountsRaw.opened || 0,
+    clicked: eventCountsRaw.clicked || 0,
+    bounced: bounceUnion,
+    complaint: eventCountsRaw.complaint || 0,
+    unsubscribed: eventCountsRaw.unsubscribed || 0,
+    deferred: eventCountsRaw.deferred || 0,
+    error: eventCountsRaw.error || 0,
+    sent: eventCountsRaw.sent || 0,
+  };
+
+  const now = new Date();
+  const endUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+  const startUtc = new Date(endUtc);
+  startUtc.setUTCDate(startUtc.getUTCDate() - 6);
+  startUtc.setUTCHours(0, 0, 0, 0);
+
+  const timelineAgg = await EventLog.aggregate([
+    {
+      $match: {
+        campaignId: campaignOid,
+        timestamp: { $gte: startUtc, $lte: endUtc },
+      },
+    },
+    {
+      $group: {
+        _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
+        delivered: { $sum: { $cond: [{ $eq: ["$eventType", "delivered"] }, 1, 0] } },
+        opened: { $sum: { $cond: [{ $eq: ["$eventType", "opened"] }, 1, 0] } },
+        clicked: { $sum: { $cond: [{ $eq: ["$eventType", "clicked"] }, 1, 0] } },
+      },
+    },
+  ]);
+
+  const dayKeys = [];
+  for (let i = 0; i < 7; i += 1) {
+    const d = new Date(startUtc);
+    d.setUTCDate(d.getUTCDate() + i);
+    dayKeys.push(d.toISOString().slice(0, 10));
+  }
+  const byDay = Object.fromEntries(timelineAgg.map((r) => [r._id, r]));
+  const timeline = dayKeys.map((date) => {
+    const row = byDay[date] || {};
+    return {
+      date,
+      delivered: row.delivered || 0,
+      opened: row.opened || 0,
+      clicked: row.clicked || 0,
+    };
+  });
+
+  const logs = await EmailLog.find({ owner: req.user.id, campaignId: campaignOid })
+    .sort({ lastEventAt: -1, sentAt: -1, createdAt: -1 })
     .lean();
 
-  const sent = logs.filter((l) => ["sent", "delivered"].includes(String(l.status || "").toLowerCase())).length;
-  const opened = logs.filter((l) => !!l.opened).length;
-  const clicked = logs.filter((l) => !!l.clicked).length;
-  const failed = logs.filter((l) => ["failed", "bounced"].includes(String(l.status || "").toLowerCase())).length;
+  const st = (s) => String(s || "").toLowerCase();
+  const stats = {
+    sent: logs.length,
+    delivered: logs.filter((l) => ["delivered", "opened", "clicked"].includes(st(l.status))).length,
+    opened: logs.filter((l) => l.opened || ["opened", "clicked"].includes(st(l.status))).length,
+    clicked: logs.filter((l) => l.clicked || st(l.status) === "clicked").length,
+    bounced: logs.filter((l) => st(l.status) === "bounced").length,
+    failed: logs.filter((l) => ["failed", "error"].includes(st(l.status))).length,
+  };
 
-  const contacts = logs.map((l) => ({
+  const recipients = logs.map((l) => ({
     _id: l._id,
     email: l.email,
     status: l.status,
@@ -474,14 +550,125 @@ exports.getCampaignDetails = async (req, res) => {
     sentAt: l.sentAt || l.createdAt,
     openedAt: l.openedAt || null,
     clickedAt: l.clickedAt || null,
+    lastEventTime: l.lastEventAt || l.clickedAt || l.openedAt || l.sentAt || l.createdAt,
     createdAt: l.createdAt,
   }));
 
   return res.json({
     campaign,
-    stats: { sent, opened, clicked, failed },
-    contacts,
+    stats,
+    eventCounts,
+    eventCountsRaw,
+    timeline,
+    recipients,
+    contacts: recipients,
   });
+};
+
+exports.getCampaignRecipientTimeline = async (req, res) => {
+  const campaign = await Campaign.findOne({ _id: req.params.id, owner: req.user.id }).select("_id").lean();
+  if (!campaign) return res.status(404).json({ message: "Campaign not found" });
+
+  const decodedEmail = decodeURIComponent(String(req.params.email || "")).trim().toLowerCase();
+  if (!decodedEmail) return res.json({ email: "", events: [] });
+
+  const events = await EventLog.find({ campaignId: campaign._id, email: decodedEmail })
+    .sort({ timestamp: 1, createdAt: 1 })
+    .select("eventType timestamp metadata")
+    .lean();
+
+  return res.json({
+    email: decodedEmail,
+    events: events.map((e) => ({
+      type: e.eventType,
+      timestamp: e.timestamp,
+      metadata: e.metadata || {},
+    })),
+  });
+};
+
+exports.exportCampaignData = async (req, res) => {
+  const campaign = await Campaign.findOne({ _id: req.params.id, owner: req.user.id }).select("_id name").lean();
+  if (!campaign) return res.status(404).json({ message: "Campaign not found" });
+
+  const [logs, events] = await Promise.all([
+    EmailLog.find({ owner: req.user.id, campaignId: campaign._id }).lean(),
+    EventLog.find({ campaignId: campaign._id }).lean(),
+  ]);
+
+  const eventByEmail = new Map();
+  for (const ev of events) {
+    const email = String(ev.email || "").toLowerCase();
+    if (!email) continue;
+    if (!eventByEmail.has(email)) {
+      eventByEmail.set(email, {
+        deliveredAt: null,
+        bounced: false,
+        error: false,
+        openCount: 0,
+        clickCount: 0,
+        timeline: [],
+      });
+    }
+    const bucket = eventByEmail.get(email);
+    const eventType = String(ev.eventType || "").toLowerCase();
+    const ts = ev.timestamp ? new Date(ev.timestamp) : null;
+    if (eventType === "delivered" && !bucket.deliveredAt && ts) bucket.deliveredAt = ts;
+    if (eventType.includes("bounce")) bucket.bounced = true;
+    if (eventType === "error") bucket.error = true;
+    if (eventType === "opened" || eventType === "unique_open" || eventType === "unique_opened") bucket.openCount += 1;
+    if (eventType === "clicked") bucket.clickCount += 1;
+    if (eventType) bucket.timeline.push({ eventType, timestamp: ts });
+  }
+
+  const safe = (value) => {
+    const str = value == null ? "" : String(value);
+    const escaped = str.replace(/"/g, "\"\"");
+    return `"${escaped}"`;
+  };
+  const fmtDate = (d) => (d ? new Date(d).toISOString() : "");
+
+  const headers = [
+    "Email",
+    "Status",
+    "Sent At",
+    "Delivered At",
+    "Opened At",
+    "Clicked At",
+    "Bounce",
+    "Error",
+    "Total Opens",
+    "Total Clicks",
+    "Events",
+  ];
+
+  const rows = logs.map((log) => {
+    const email = String(log.email || "").toLowerCase();
+    const agg = eventByEmail.get(email) || { deliveredAt: null, bounced: false, error: false, openCount: 0, clickCount: 0, timeline: [] };
+    const timelineText = agg.timeline
+      .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
+      .map((x) => x.eventType)
+      .join(" > ");
+    return [
+      safe(email),
+      safe(log.status || ""),
+      safe(fmtDate(log.sentAt || log.createdAt)),
+      safe(fmtDate(agg.deliveredAt)),
+      safe(fmtDate(log.openedAt)),
+      safe(fmtDate(log.clickedAt)),
+      safe(agg.bounced ? "yes" : "no"),
+      safe(agg.error ? "yes" : "no"),
+      safe(agg.openCount),
+      safe(agg.clickCount),
+      safe(timelineText),
+    ].join(",");
+  });
+
+  const csv = [headers.map(safe).join(","), ...rows].join("\n");
+  const filename = `${String(campaign.name || "campaign").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase()}-data.csv`;
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+  return res.send(csv);
 };
 
 exports.getStats = async (req, res) => {
@@ -491,6 +678,101 @@ exports.getStats = async (req, res) => {
     opened: logs.filter((x) => x.opened).length,
     clicked: logs.filter((x) => x.clicked).length,
     failed: logs.filter((x) => x.status === "failed").length,
+  });
+};
+
+exports.getDashboardStats = async (req, res) => {
+  const owner = req.user.id;
+  const campaigns = await Campaign.find({ owner }).select("_id name").lean();
+  const campaignIds = campaigns.map((c) => c._id);
+
+  const [totalSent, totalOpened, totalClicked, totalBounced] = await Promise.all([
+    EmailLog.countDocuments({ owner }),
+    EmailLog.countDocuments({ owner, opened: true }),
+    EmailLog.countDocuments({ owner, clicked: true }),
+    EmailLog.countDocuments({ owner, status: "bounced" }),
+  ]);
+
+  const deliveredStatuses = ["delivered", "opened", "clicked"];
+  const totalDelivered = await EmailLog.countDocuments({ owner, status: { $in: deliveredStatuses } });
+  const openRate = totalDelivered ? Number(((totalOpened / totalDelivered) * 100).toFixed(2)) : 0;
+  const clickRate = totalDelivered ? Number(((totalClicked / totalDelivered) * 100).toFixed(2)) : 0;
+
+  const now = new Date();
+  const endUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+  const startUtc = new Date(endUtc);
+  startUtc.setUTCDate(startUtc.getUTCDate() - 6);
+  startUtc.setUTCHours(0, 0, 0, 0);
+
+  const weeklyAgg = await EventLog.aggregate([
+    {
+      $match: {
+        campaignId: { $in: campaignIds },
+        timestamp: { $gte: startUtc, $lte: endUtc },
+      },
+    },
+    {
+      $group: {
+        _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
+        sent: { $sum: { $cond: [{ $eq: ["$eventType", "sent"] }, 1, 0] } },
+        opened: { $sum: { $cond: [{ $eq: ["$eventType", "opened"] }, 1, 0] } },
+        clicked: { $sum: { $cond: [{ $eq: ["$eventType", "clicked"] }, 1, 0] } },
+      },
+    },
+  ]);
+
+  const days = [];
+  for (let i = 0; i < 7; i += 1) {
+    const d = new Date(startUtc);
+    d.setUTCDate(d.getUTCDate() + i);
+    days.push(d.toISOString().slice(0, 10));
+  }
+  const weeklyByDay = Object.fromEntries(weeklyAgg.map((x) => [x._id, x]));
+  const weeklyStats = days.map((date) => {
+    const row = weeklyByDay[date] || {};
+    return {
+      date,
+      sent: row.sent || 0,
+      opened: row.opened || 0,
+      clicked: row.clicked || 0,
+    };
+  });
+
+  const campaignAgg = await EventLog.aggregate([
+    {
+      $match: {
+        campaignId: { $in: campaignIds },
+      },
+    },
+    {
+      $group: {
+        _id: "$campaignId",
+        opened: { $sum: { $cond: [{ $eq: ["$eventType", "opened"] }, 1, 0] } },
+        clicked: { $sum: { $cond: [{ $eq: ["$eventType", "clicked"] }, 1, 0] } },
+      },
+    },
+    { $sort: { opened: -1, clicked: -1 } },
+    { $limit: 8 },
+  ]);
+
+  const campaignNameMap = new Map(campaigns.map((c) => [String(c._id), c.name]));
+  const campaignStats = campaignAgg.map((row) => ({
+    campaignId: row._id,
+    campaignName: campaignNameMap.get(String(row._id)) || "Untitled campaign",
+    opened: row.opened || 0,
+    clicked: row.clicked || 0,
+  }));
+
+  return res.json({
+    totalSent,
+    totalDelivered,
+    totalOpened,
+    totalClicked,
+    totalBounced,
+    openRate,
+    clickRate,
+    weeklyStats,
+    campaignStats,
   });
 };
 exports.getLogs = async (req, res) =>

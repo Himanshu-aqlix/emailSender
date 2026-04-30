@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Bar, Line } from "react-chartjs-2";
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend } from "chart.js";
-import { AlertTriangle, CheckCircle2, ChevronRight, Eye, Send, Sparkles, Users } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronRight, Eye, RefreshCw, Send, Sparkles, Users } from "lucide-react";
 import { getCampaigns } from "../services/campaignService";
 import { getContacts } from "../services/contactService";
-import { getStats } from "../services/statsService";
-import { getBrevoEvents } from "../services/brevoTrackingService";
+import { getDashboardStats } from "../services/statsService";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend);
 
@@ -28,69 +27,119 @@ const tooltipBase = {
   caretPadding: 10,
 };
 
+const DEFAULT_DASHBOARD = {
+  totalSent: 0,
+  totalDelivered: 0,
+  totalOpened: 0,
+  totalClicked: 0,
+  totalBounced: 0,
+  openRate: 0,
+  clickRate: 0,
+  weeklyStats: [],
+  campaignStats: [],
+};
+
+function useCountUp(value, durationMs = 500) {
+  const [display, setDisplay] = useState(value);
+  useEffect(() => {
+    const target = Number(value || 0);
+    const start = Number(display || 0);
+    if (target === start) return;
+    const delta = target - start;
+    const steps = 18;
+    const stepMs = Math.max(20, Math.floor(durationMs / steps));
+    let i = 0;
+    const id = setInterval(() => {
+      i += 1;
+      const next = start + (delta * i) / steps;
+      if (i >= steps) {
+        setDisplay(target);
+        clearInterval(id);
+      } else {
+        setDisplay(Math.round(next));
+      }
+    }, stepMs);
+    return () => clearInterval(id);
+  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  return display;
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const [stats, setStats] = useState({ totalSent: 0, opened: 0, clicked: 0, failed: 0 });
+  const [stats, setStats] = useState(DEFAULT_DASHBOARD);
   const [campaigns, setCampaigns] = useState([]);
   const [contactsCount, setContactsCount] = useState(0);
   const [audienceRows, setAudienceRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    Promise.all([getStats(), getCampaigns({ page: 1, limit: 4 }), getContacts("page=1&limit=500"), getBrevoEvents({ limit: 100, days: 30 })])
-      .then(([statsRes, campaignsRes, contactsRes, brevoRes]) => {
-        const brevo = brevoRes?.data;
-        const events = brevo?.events || brevo?.events?.items || brevo?.items || brevo?.data || [];
-        const list = Array.isArray(events) ? events : [];
-        const delivered = list.filter((e) => String(e.event || "").toLowerCase() === "delivered").length;
-        const opened = list.filter((e) => String(e.event || "").toLowerCase() === "opened").length;
-        const clicked = list.filter((e) => String(e.event || "").toLowerCase() === "click").length;
-        const bounced = list.filter((e) => String(e.event || "").toLowerCase() === "bounced").length;
+  const fetchDashboard = useCallback(async (silent = false) => {
+    if (silent) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const [statsRes, campaignsRes, contactsRes] = await Promise.all([
+        getDashboardStats(),
+        getCampaigns({ page: 1, limit: 4 }),
+        getContacts("page=1&limit=500"),
+      ]);
+      setStats({ ...DEFAULT_DASHBOARD, ...(statsRes?.data || {}) });
+      const campData = campaignsRes?.data || {};
+      setCampaigns((campData.items || []).slice(0, 4));
 
-        const fallbackStats = statsRes.data || { totalSent: 0, opened: 0, clicked: 0, failed: 0 };
-        setStats({
-          totalSent: delivered || fallbackStats.totalSent,
-          opened: opened || fallbackStats.opened,
-          clicked: clicked || fallbackStats.clicked,
-          failed: bounced || fallbackStats.failed,
-        });
-        const campData = campaignsRes.data || {};
-        setCampaigns((campData.items || []).slice(0, 4));
-        const contactsData = contactsRes.data || {};
-        const items = contactsData.items || contactsData;
-        const totalFromPagination = contactsData.pagination?.total;
-        setContactsCount(typeof totalFromPagination === "number" ? totalFromPagination : (Array.isArray(items) ? items.length : 0));
-        if (Array.isArray(items)) {
-          const map = new Map();
-          items.forEach((contact) => {
-            const refs = Array.isArray(contact?.lists) ? contact.lists : [];
-            refs.forEach((ref) => {
-              const id = String(ref?._id || ref || "");
-              if (!id) return;
-              const name = ref?.name || `List ${id.slice(-4)}`;
-              const prev = map.get(id) || { id, name, count: 0 };
-              prev.count += 1;
-              map.set(id, prev);
-            });
+      const contactsData = contactsRes?.data || {};
+      const items = contactsData.items || contactsData;
+      const totalFromPagination = contactsData.pagination?.total;
+      setContactsCount(typeof totalFromPagination === "number" ? totalFromPagination : Array.isArray(items) ? items.length : 0);
+
+      if (Array.isArray(items)) {
+        const map = new Map();
+        items.forEach((contact) => {
+          const refs = Array.isArray(contact?.lists) ? contact.lists : [];
+          refs.forEach((ref) => {
+            const id = String(ref?._id || ref || "");
+            if (!id) return;
+            const name = ref?.name || `List ${id.slice(-4)}`;
+            const prev = map.get(id) || { id, name, count: 0 };
+            prev.count += 1;
+            map.set(id, prev);
           });
-          setAudienceRows(
-            Array.from(map.values())
-              .sort((a, b) => b.count - a.count)
-              .slice(0, 5)
-          );
-        } else {
-          setAudienceRows([]);
-        }
-      })
-      .catch(() => null);
+        });
+        setAudienceRows(Array.from(map.values()).sort((a, b) => b.count - a.count).slice(0, 5));
+      } else {
+        setAudienceRows([]);
+      }
+    } catch {
+      // keep previous data
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
 
+  useEffect(() => {
+    fetchDashboard(false);
+  }, [fetchDashboard]);
+
+  useEffect(() => {
+    const id = setInterval(() => fetchDashboard(true), 10000);
+    return () => clearInterval(id);
+  }, [fetchDashboard]);
+
+  const weeklyStats = Array.isArray(stats.weeklyStats) ? stats.weeklyStats : [];
+  const chartWeekly = weeklyStats.length
+    ? weeklyStats
+    : Array.from({ length: 7 }).map((_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (6 - i));
+        return { date: d.toISOString().slice(0, 10), sent: 0, opened: 0, clicked: 0 };
+      });
   const lineData = {
-    labels: ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"],
+    labels: chartWeekly.map((d) => new Date(`${d.date}T12:00:00Z`).toLocaleDateString(undefined, { weekday: "short" })),
     datasets: [
       {
         label: "Sent",
-        data: [9, 8, 11, 5, 6, 11, 5],
-        borderColor: "#e11d48",
+        data: chartWeekly.map((d) => d.sent || 0),
+        borderColor: "#2563eb",
         tension: 0.35,
         pointRadius: 0,
         pointHoverRadius: 6,
@@ -100,7 +149,7 @@ export default function DashboardPage() {
       },
       {
         label: "Opened",
-        data: [8, 6, 7, 5, 4, 7, 5],
+        data: chartWeekly.map((d) => d.opened || 0),
         borderColor: "#16a34a",
         tension: 0.35,
         pointRadius: 0,
@@ -111,8 +160,8 @@ export default function DashboardPage() {
       },
       {
         label: "Clicked",
-        data: [5, 3, 2, 3, 1, 3, 2],
-        borderColor: "#0ea5e9",
+        data: chartWeekly.map((d) => d.clicked || 0),
+        borderColor: "#f59e0b",
         tension: 0.35,
         pointRadius: 0,
         pointHoverRadius: 6,
@@ -154,7 +203,7 @@ export default function DashboardPage() {
   );
 
   const barChartOptions = useMemo(() => {
-    const peak = Math.max(stats.opened, stats.clicked, 0);
+    const peak = Math.max(...(stats.campaignStats || []).map((x) => Math.max(x.opened || 0, x.clicked || 0)), 0);
     const yMax = peak === 0 ? 5 : Math.ceil(peak * 1.15);
     return {
       responsive: true,
@@ -197,37 +246,28 @@ export default function DashboardPage() {
         },
       },
     };
-  }, [stats.opened, stats.clicked]);
+  }, [stats.campaignStats]);
 
-  const openRate = stats.totalSent ? (stats.opened / stats.totalSent) * 100 : 0;
-  const ctr = stats.totalSent ? (stats.clicked / stats.totalSent) * 100 : 0;
-  const engagementCampaigns = campaigns.length
-    ? campaigns
-    : [
-        { _id: "sample-1", name: "ed" },
-        { _id: "sample-2", name: "dwwe" },
-        { _id: "sample-3", name: "promo" },
-        { _id: "sample-4", name: "newsletter" },
-      ];
+  const openRate = Number(stats.openRate || 0);
+  const ctr = Number(stats.clickRate || 0);
+  const engagementCampaigns = (stats.campaignStats || []).length
+    ? stats.campaignStats
+    : campaigns.map((c) => ({ campaignName: c.name, opened: 0, clicked: 0 }));
 
   const campaignBarData = {
-    labels: engagementCampaigns.map((c) => String(c.name || "campaign").toLowerCase()),
+    labels: engagementCampaigns.map((c) => String(c.campaignName || c.name || "campaign")),
     datasets: [
       {
         label: "Opened",
-        data: engagementCampaigns.map((c, i) =>
-          Number(c.openedCount ?? c.opened ?? c.metrics?.opened ?? Math.max(30 - i * 8, 8))
-        ),
+        data: engagementCampaigns.map((c) => Number(c.opened ?? 0)),
         backgroundColor: "#10b981",
         borderRadius: 6,
         maxBarThickness: 18,
       },
       {
         label: "Clicked",
-        data: engagementCampaigns.map((c, i) =>
-          Number(c.clickedCount ?? c.clicked ?? c.metrics?.clicked ?? [1, 3, 5, 2][i % 4])
-        ),
-        backgroundColor: "#4f63df",
+        data: engagementCampaigns.map((c) => Number(c.clicked ?? 0)),
+        backgroundColor: "#f59e0b",
         borderRadius: 6,
         maxBarThickness: 18,
       },
@@ -268,29 +308,41 @@ export default function DashboardPage() {
     },
   };
 
+  const sentDisplay = useCountUp(stats.totalSent || 0);
+  const openedDisplay = useCountUp(stats.totalOpened || 0);
+  const clickedDisplay = useCountUp(stats.totalClicked || 0);
+  const bouncedDisplay = useCountUp(stats.totalBounced || 0);
+
   return (
     <section className="dashboard-page">
       <h2 className="dashboard-title">Dashboard</h2>
       <p className="dashboard-subtitle">Overview of your email marketing performance.</p>
+      <div className="dashboard-live-row">
+        <small>Auto-refresh every 10 seconds</small>
+        <button type="button" className="ghost-btn dashboard-refresh-btn" disabled={refreshing} onClick={() => fetchDashboard(true)}>
+          <RefreshCw size={14} className={refreshing ? "campaign-refresh-spin" : ""} />
+          {refreshing ? "Refreshing..." : "Refresh"}
+        </button>
+      </div>
       <div className="kpi-grid">
-        <div className="kpi-card">
-          <p className="kpi-heading">TOTAL SENT <span className="kpi-icon"><Send size={14} /></span></p>
-          <h3>{stats.totalSent}</h3>
+        <div className={`kpi-card ${loading ? "kpi-skeleton" : ""}`}>
+          <p className="kpi-heading">TOTAL SENT <span className="kpi-icon sent"><Send size={14} /></span></p>
+          <h3>{loading ? "..." : sentDisplay}</h3>
           <small>↗ +12% this week.</small>
         </div>
-        <div className="kpi-card">
+        <div className={`kpi-card ${loading ? "kpi-skeleton" : ""}`}>
           <p className="kpi-heading">OPENED <span className="kpi-icon green"><Eye size={14} /></span></p>
-          <h3>{stats.opened}</h3>
+          <h3>{loading ? "..." : openedDisplay}</h3>
           <small>↗ {openRate.toFixed(0)}% open rate</small>
         </div>
-        <div className="kpi-card">
-          <p className="kpi-heading">CLICKED <span className="kpi-icon red"><Sparkles size={14} /></span></p>
-          <h3>{stats.clicked}</h3>
+        <div className={`kpi-card ${loading ? "kpi-skeleton" : ""}`}>
+          <p className="kpi-heading">CLICKED <span className="kpi-icon orange"><Sparkles size={14} /></span></p>
+          <h3>{loading ? "..." : clickedDisplay}</h3>
           <small>↗ {ctr.toFixed(0)}% CTR</small>
         </div>
-        <div className="kpi-card">
-          <p className="kpi-heading">FAILED <span className="kpi-icon yellow"><AlertTriangle size={14} /></span></p>
-          <h3>{stats.failed}</h3>
+        <div className={`kpi-card ${loading ? "kpi-skeleton" : ""}`}>
+          <p className="kpi-heading">FAILED <span className="kpi-icon red"><AlertTriangle size={14} /></span></p>
+          <h3>{loading ? "..." : bouncedDisplay}</h3>
           <small className="muted">Needs attention</small>
         </div>
       </div>

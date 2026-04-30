@@ -6,16 +6,22 @@ const rateLimit = require("express-rate-limit");
 const routes = require("./routes");
 
 const app = express();
+app.set("trust proxy", 1);
 app.use(helmet());
 app.use(cors({ origin: process.env.CLIENT_URL }));
 app.use(express.json({ limit: "5mb" }));
 app.use(morgan("dev"));
+app.use((req, _res, next) => {
+  console.log("🌐 REQUEST:", req.method, req.url);
+  next();
+});
 
 const isTrackingPath = (req) =>
   req.path.startsWith("/api/track/") ||
   req.path.startsWith("/track/") ||
   req.path.startsWith("/api/unsubscribe") ||
-  req.path.startsWith("/webhook/brevo");
+  req.path.startsWith("/webhook/brevo") ||
+  req.path.startsWith("/api/webhook/brevo");
 
 // Tracking endpoints (open pixel + click redirects) can receive bursts from email clients.
 // Keep protection, but allow higher volume to avoid false 429s.

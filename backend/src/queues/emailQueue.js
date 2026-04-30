@@ -56,7 +56,7 @@ const processCampaign = async (job) => {
             to: c.email,
             subject,
             html: trackedHtml,
-            tags: [`cid:${String(campaign._id)}`, `log:${String(log._id)}`],
+            tags: [`campaign:${String(campaign._id)}`, `cid:${String(campaign._id)}`, `log:${String(log._id)}`],
           });
         } catch (brevoError) {
           if (isBrevoRateLimit(brevoError)) {
@@ -66,7 +66,7 @@ const processCampaign = async (job) => {
               to: c.email,
               subject,
               html: trackedHtml,
-              tags: [`cid:${String(campaign._id)}`, `log:${String(log._id)}`],
+              tags: [`campaign:${String(campaign._id)}`, `cid:${String(campaign._id)}`, `log:${String(log._id)}`],
             });
           } else {
             throw brevoError;

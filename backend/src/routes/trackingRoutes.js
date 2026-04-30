@@ -2,6 +2,7 @@ const express = require("express");
 const EmailLog = require("../models/EmailLog");
 const Campaign = require("../models/Campaign");
 const User = require("../models/User");
+const { recordTrackingEngagement } = require("../utils/brevoWebhookHandler");
 
 const router = express.Router();
 const pixelBuffer = Buffer.from("R0lGODlhAQABAPAAAAAAAAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
@@ -21,13 +22,18 @@ router.get("/api/track/open/:campaignId/:email", async (req, res) => {
     const campaignId = String(req.params.campaignId || "");
     const email = safeDecode(req.params.email).toLowerCase();
     const logId = String(req.query.logId || "");
-    if (logId) {
-      await EmailLog.findByIdAndUpdate(logId, { opened: true }).catch(() => null);
-    } else {
-      await EmailLog.findOneAndUpdate({ campaignId, email }, { opened: true }).catch(() => null);
+    let log = null;
+    if (logId && logId.length === 24) {
+      log = await EmailLog.findById(logId).catch(() => null);
     }
-    if (hasOpenedCount) {
-      await Campaign.updateOne({ _id: campaignId }, { $inc: { openedCount: 1 } }).catch(() => null);
+    if (!log && campaignId && email) {
+      log = await EmailLog.findOne({ campaignId, email }).catch(() => null);
+    }
+    if (log) {
+      await recordTrackingEngagement(log._id, "opened");
+      if (hasOpenedCount) {
+        await Campaign.updateOne({ _id: campaignId }, { $inc: { openedCount: 1 } }).catch(() => null);
+      }
     }
   } catch (error) {
     console.error("[tracking] open failed:", error?.message || error);
@@ -48,16 +54,18 @@ router.get("/api/track/click", async (req, res) => {
   if (rawUrl) redirectUrl = safeDecode(rawUrl) || fallback;
 
   try {
-    if (logId) {
-      await EmailLog.findByIdAndUpdate(logId, { clicked: true }).catch(() => null);
-      if (hasClickCount && campaignId) {
-        await Campaign.updateOne({ _id: campaignId }, { $inc: { clickCount: 1 } }).catch(() => null);
-      }
-    } else if (campaignId && email) {
-      await EmailLog.findOneAndUpdate({ campaignId, email }, { clicked: true }).catch(() => null);
-      if (hasClickCount) {
-        await Campaign.updateOne({ _id: campaignId }, { $inc: { clickCount: 1 } }).catch(() => null);
-      }
+    let log = null;
+    if (logId && logId.length === 24) {
+      log = await EmailLog.findById(logId).catch(() => null);
+    }
+    if (!log && campaignId && email) {
+      log = await EmailLog.findOne({ campaignId, email }).catch(() => null);
+    }
+    if (log) {
+      await recordTrackingEngagement(log._id, "clicked");
+    }
+    if (log && hasClickCount && campaignId) {
+      await Campaign.updateOne({ _id: campaignId }, { $inc: { clickCount: 1 } }).catch(() => null);
     }
   } catch (error) {
     console.error("[tracking] click failed:", error?.message || error);

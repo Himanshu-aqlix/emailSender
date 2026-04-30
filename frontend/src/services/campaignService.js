@@ -18,3 +18,7 @@ export const createCampaign = (data) => api.post("/api/campaigns", data);
 export const sendCampaign = (campaignId) => api.post("/api/campaigns/send", { campaignId });
 
 export const getCampaignDetails = (campaignId) => api.get(`/api/campaigns/${campaignId}/details`);
+export const exportCampaignData = (campaignId) =>
+  api.get(`/api/campaign/${campaignId}/export`, { responseType: "blob" });
+export const getCampaignRecipientTimeline = (campaignId, email) =>
+  api.get(`/api/campaign/${campaignId}/recipient/${encodeURIComponent(email)}/timeline`);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Bell,
   LayoutDashboard,
@@ -23,6 +23,7 @@ const navAfterLists = [
 ];
 
 export default function AppLayout() {
+  const navigate = useNavigate();
   const location = useLocation();
   const [profile, setProfile] = useState(readStoredUser);
   const [profileLoading, setProfileLoading] = useState(true);
@@ -80,7 +81,8 @@ export default function AppLayout() {
   const doLogout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
-    location.href = "/";
+    setShowLogoutConfirm(false);
+    navigate("/", { replace: true });
   };
 
   return (
