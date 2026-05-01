@@ -14,6 +14,8 @@ import {
   MoreVertical,
   Pencil,
   Trash2,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import { getMe } from "../services/authService";
 import { deleteList, getLists, renameList } from "../services/listService";
@@ -25,6 +27,8 @@ const navAfterLists = [
   { key: "campaigns", icon: Send, label: "Campaigns" },
   { key: "analytics", icon: BarChart3, label: "Analytics" },
 ];
+
+const SIDEBAR_STORAGE_KEY = "mailpulse-sidebar-collapsed";
 
 export default function AppLayout() {
   const navigate = useNavigate();
@@ -43,6 +47,46 @@ export default function AppLayout() {
   const [renameListSubmitting, setRenameListSubmitting] = useState(false);
   const [renameListError, setRenameListError] = useState("");
   const [toast, setToast] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia("(max-width: 900px)").matches : false
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 900px)");
+    const sync = () => setIsNarrowViewport(mq.matches);
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
+  const sidebarCollapsedEffective = sidebarCollapsed && !isNarrowViewport;
+
+  const persistSidebarCollapsed = (next) => {
+    try {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, next ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      persistSidebarCollapsed(next);
+      return next;
+    });
+  };
+
+  const expandSidebar = () => {
+    setSidebarCollapsed(false);
+    persistSidebarCollapsed(false);
+  };
 
   const refreshLists = useCallback(() => {
     getLists()
@@ -78,6 +122,10 @@ export default function AppLayout() {
   useEffect(() => {
     if (location.pathname.startsWith("/lists/")) setListsOpen(true);
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (sidebarCollapsedEffective) setListsOpen(false);
+  }, [sidebarCollapsedEffective]);
 
   useEffect(() => {
     const onRefreshLists = () => refreshLists();
@@ -173,40 +221,59 @@ export default function AppLayout() {
   };
 
   return (
-    <div className="app-shell">
-      <aside className="app-sidebar">
+    <div className={`app-shell${sidebarCollapsedEffective ? " app-shell--sidebar-collapsed" : ""}`}>
+      <aside
+        className={`app-sidebar${sidebarCollapsedEffective ? " app-sidebar--collapsed" : ""}`}
+        aria-label="Main navigation"
+      >
         <div className="app-brand">
-          <img src="/favicon.ico" alt="MailPulse logo" className="app-brand-logo" />
-          <div>
+          <img src="/favicon.ico" alt="MailPulse" className="app-brand-logo" />
+          <div className="app-brand-text">
             <strong>MailPulse</strong>
             <small>Bulk email suite</small>
           </div>
         </div>
 
         <nav className="app-nav">
-          <NavLink to="/dashboard" className={({ isActive }) => `app-nav-link${isActive ? " active" : ""}`}>
-            <LayoutDashboard size={15} />
-            <span>Dashboard</span>
+          <NavLink
+            to="/dashboard"
+            title="Dashboard"
+            className={({ isActive }) => `app-nav-link${isActive ? " active" : ""}`}
+          >
+            <LayoutDashboard size={15} aria-hidden />
+            <span className="app-nav-link-text">Dashboard</span>
           </NavLink>
-          <NavLink to="/contacts" className={({ isActive }) => `app-nav-link${isActive ? " active" : ""}`}>
-            <Users size={15} />
-            <span>Contacts</span>
+          <NavLink
+            to="/contacts"
+            title="Contacts"
+            className={({ isActive }) => `app-nav-link${isActive ? " active" : ""}`}
+          >
+            <Users size={15} aria-hidden />
+            <span className="app-nav-link-text">Contacts</span>
           </NavLink>
 
           <div className="app-sidebar-lists">
             <button
               type="button"
               className={`app-nav-link app-sidebar-lists-toggle${listsOpen ? " is-open" : ""}`}
-              onClick={() => setListsOpen((o) => !o)}
-              aria-expanded={listsOpen}
+              title="Lists"
+              onClick={() => {
+                if (sidebarCollapsedEffective) {
+                  expandSidebar();
+                  setListsOpen(true);
+                  return;
+                }
+                setListsOpen((o) => !o);
+              }}
+              aria-expanded={sidebarCollapsedEffective ? false : listsOpen}
             >
               <span className="app-sidebar-lists-toggle-label">
-                <ListIcon size={15} />
-                <span>Lists</span>
+                <ListIcon size={15} aria-hidden />
+                <span className="app-nav-link-text app-sidebar-lists-label">Lists</span>
               </span>
               <ChevronDown size={14} className="app-sidebar-lists-arrow" aria-hidden />
             </button>
-            {listsOpen ? (
+            {listsOpen && !sidebarCollapsedEffective ? (
               <div className="app-sidebar-lists-sub">
                 {lists.length === 0 ? (
                   <span className="app-sidebar-lists-empty">No lists yet</span>
@@ -271,10 +338,11 @@ export default function AppLayout() {
             <NavLink
               key={item.key}
               to={`/${item.key}`}
+              title={item.label}
               className={({ isActive }) => `app-nav-link${isActive ? " active" : ""}`}
             >
-              <item.icon size={15} />
-              <span>{item.label}</span>
+              <item.icon size={15} aria-hidden />
+              <span className="app-nav-link-text">{item.label}</span>
             </NavLink>
           ))}
         </nav>
@@ -282,6 +350,21 @@ export default function AppLayout() {
 
       <main className="app-content">
         <header className="app-topbar">
+          <div className="app-topbar-lead">
+            <button
+              type="button"
+              className="app-topbar-nav-toggle"
+              onClick={toggleSidebar}
+              aria-expanded={!sidebarCollapsedEffective}
+              aria-label={sidebarCollapsedEffective ? "Expand navigation" : "Collapse navigation"}
+            >
+              {sidebarCollapsedEffective ? (
+                <PanelLeftOpen size={20} aria-hidden />
+              ) : (
+                <PanelLeftClose size={20} aria-hidden />
+              )}
+            </button>
+          </div>
           <div className="app-user">
             <span className="app-bell"><Bell size={14} /></span>
             <div className="app-user-meta">

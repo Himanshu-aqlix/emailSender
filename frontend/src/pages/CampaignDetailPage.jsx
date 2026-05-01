@@ -124,14 +124,14 @@ function subtitleForEngagement(rangeKey, granularity) {
 const toPct = (value, total) => (total ? ((value / total) * 100).toFixed(1) : "0.0");
 
 const EVENT_PANEL_ROWS = [
-  { key: "delivered", label: "Delivered" },
-  { key: "opened", label: "Opened" },
-  { key: "clicked", label: "Clicked" },
-  { key: "bounced", label: "Bounced" },
-  { key: "complaint", label: "Complaint" },
-  { key: "unsubscribed", label: "Unsubscribed" },
-  { key: "deferred", label: "Deferred" },
-  { key: "error", label: "Error" },
+  { key: "delivered", label: "Delivered", tooltip: "Email successfully delivered" },
+  { key: "opened", label: "Opened", tooltip: "Recipient opened the email" },
+  { key: "clicked", label: "Clicked", tooltip: "Recipient clicked a link" },
+  { key: "bounced", label: "Bounced", tooltip: "Email could not be delivered" },
+  { key: "complaint", label: "Complaint", tooltip: "Recipient reported spam or abuse" },
+  { key: "unsubscribed", label: "Unsubscribed", tooltip: "User unsubscribed from emails" },
+  { key: "deferred", label: "Deferred", tooltip: "Delivery temporarily delayed by the server" },
+  { key: "error", label: "Error", tooltip: "Send or delivery error occurred" },
 ];
 
 const defaultData = {
@@ -632,8 +632,13 @@ export default function CampaignDetailPage() {
               >
                 <span className="campaign-event-label">
                   {row.label}
-                  <span className="campaign-event-info" title="Count from Brevo webhooks">
-                    <Info size={14} strokeWidth={2} />
+                  <span className="info-tooltip" tabIndex={0} aria-label={`${row.label}: ${row.tooltip}`}>
+                    <span className="info-icon" aria-hidden>
+                      <Info size={14} strokeWidth={2} />
+                    </span>
+                    <span className="tooltip-text" role="tooltip">
+                      {row.tooltip}
+                    </span>
                   </span>
                 </span>
                 <span className="campaign-event-count">{eventCounts[row.key] ?? 0}</span>

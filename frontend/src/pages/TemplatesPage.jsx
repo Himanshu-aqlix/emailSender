@@ -409,14 +409,16 @@ export default function TemplatesPage() {
             </div>
           ) : null}
           {tab === "html" ? (
-            <Editor
-              height="430px"
-              defaultLanguage="html"
-              value={htmlContent}
-              onChange={(v) => setHtmlContent(v || "")}
-              onMount={handleEditorMount}
-              options={editorOptions}
-            />
+            <div className="template-monaco-mount">
+              <Editor
+                height="430px"
+                defaultLanguage="html"
+                value={htmlContent}
+                onChange={(v) => setHtmlContent(v || "")}
+                onMount={handleEditorMount}
+                options={editorOptions}
+              />
+            </div>
           ) : (
             <EmailEditor key={activeId || "new-template"} value={htmlContent} onChange={setHtmlContent} />
           )}
