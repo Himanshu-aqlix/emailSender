@@ -13,6 +13,7 @@ const Campaign = require("../models/Campaign");
 const EmailLog = require("../models/EmailLog");
 const EventLog = require("../models/EventLog");
 const { enqueueCampaign } = require("../queues/emailQueue");
+const { normalizeRange, buildEngagementTimeline } = require("../utils/campaignEngagementTimeline");
 
 const sign = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
 
@@ -88,9 +89,18 @@ exports.me = async (req, res) => {
 };
 
 exports.uploadExcel = async (req, res) => {
-  const requestedName = (req.body.listName || `List ${Date.now()}`).trim();
-  let list = await List.findOne({ owner: req.user.id, name: requestedName });
-  if (!list) list = await List.create({ owner: req.user.id, name: requestedName });
+  const listIdRaw = String(req.body.listId || "").trim();
+
+  let list;
+  if (listIdRaw) {
+    list = await List.findOne({ _id: listIdRaw, owner: req.user.id });
+    if (!list) return res.status(404).json({ message: "List not found" });
+  } else {
+    const requestedName = (req.body.listName || `List ${Date.now()}`).trim();
+    list = await List.findOne({ owner: req.user.id, name: requestedName });
+    if (!list) list = await List.create({ owner: req.user.id, name: requestedName });
+  }
+
   const parsed = parseSpreadsheetBufferToRows(req.file.buffer);
   let count = 0;
   for (const row of parsed) {
@@ -232,19 +242,35 @@ exports.deleteList = async (req, res) => {
   const list = await List.findOne({ _id: listId, owner: req.user.id }).select("_id name contacts");
   if (!list) return res.status(404).json({ message: "List not found" });
 
-  const contactsInList = await Contact.find({ owner: req.user.id, lists: list._id }).select("_id");
-  const contactIds = contactsInList.map((c) => c._id);
-  if (contactIds.length) {
-    await Contact.deleteMany({ owner: req.user.id, _id: { $in: contactIds } });
-    await List.updateMany({ owner: req.user.id }, { $pull: { contacts: { $in: contactIds } } });
+  await Contact.updateMany({ owner: req.user.id, lists: list._id }, { $pull: { lists: list._id } });
+
+  const listContactIds = Array.isArray(list.contacts) ? list.contacts.filter(Boolean) : [];
+  if (listContactIds.length) {
+    await List.updateMany({ owner: req.user.id }, { $pull: { contacts: { $in: listContactIds } } });
   }
 
   await List.deleteOne({ _id: listId, owner: req.user.id });
   return res.json({
     message: "List deleted successfully",
     deletedListId: listId,
-    deletedContacts: contactIds.length,
   });
+};
+
+exports.removeContactFromList = async (req, res) => {
+  const listId = String(req.params.listId || "").trim();
+  const contactId = String(req.params.contactId || "").trim();
+  if (!listId || !contactId) return res.status(400).json({ message: "listId and contactId are required" });
+
+  const list = await List.findOne({ _id: listId, owner: req.user.id });
+  if (!list) return res.status(404).json({ message: "List not found" });
+
+  const contact = await Contact.findOne({ _id: contactId, owner: req.user.id });
+  if (!contact) return res.status(404).json({ message: "Contact not found" });
+
+  await Contact.updateOne({ _id: contactId, owner: req.user.id }, { $pull: { lists: listId } });
+  await List.updateOne({ _id: listId, owner: req.user.id }, { $pull: { contacts: contactId } });
+
+  return res.json({ message: "Contact removed from list" });
 };
 exports.addSingleContact = async (req, res) => {
   const { name, email, listId, listName, fields = {}, phone } = req.body;
@@ -288,6 +314,64 @@ exports.addSingleContact = async (req, res) => {
 
   const populated = await Contact.findById(contact._id).populate("lists", "name");
   return res.status(201).json(populated);
+};
+
+/** Demo contacts seeded from the Contacts UI (Import → Use Sample Data). */
+const SAMPLE_CONTACT_ROWS = [
+  { name: "Alex Morgan", phone: "+1 555 201-4401" },
+  { name: "Priya Patel", phone: "+44 7700 900321" },
+  { name: "Jordan Lee", phone: "+1 555 330-9822" },
+  { name: "Sam Rivera", phone: "+34 622 91 8844" },
+  { name: "Casey Nguyen", phone: "+61 400 884 921" },
+  { name: "Riley Brooks", phone: "+1 555 772-1103" },
+  { name: "Morgan Chen", phone: "+49 151 88449201" },
+  { name: "Taylor Davis", phone: "+1 555 901-7740" },
+];
+
+exports.addSampleContacts = async (req, res) => {
+  const hasSampleAlready = await Contact.exists({ owner: req.user.id, isSampleData: true });
+  if (hasSampleAlready) {
+    return res.status(200).json({ alreadyExists: true, message: "Sample data already added" });
+  }
+
+  let ownerLists = await List.find({ owner: req.user.id }).select("_id").lean();
+  if (!ownerLists.length) {
+    const demo = await List.create({ owner: req.user.id, name: "Demo List" });
+    ownerLists = [{ _id: demo._id }];
+  }
+
+  const listIdsAll = ownerLists.map((l) => l._id);
+  const pickRandomListSubset = () => {
+    const n = listIdsAll.length;
+    const want = 1 + (n > 1 ? Math.floor(Math.random() * 2) : 0);
+    const shuffled = [...listIdsAll].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, Math.min(want, n));
+  };
+
+  const nonce = crypto.randomBytes(6).toString("hex").slice(0, 12);
+  const inserted = [];
+
+  for (let i = 0; i < SAMPLE_CONTACT_ROWS.length; i += 1) {
+    const row = SAMPLE_CONTACT_ROWS[i];
+    const email = `demo.${nonce}.${i}@mailpulse.sample`.toLowerCase();
+    const listIds = pickRandomListSubset();
+    const contact = await Contact.create({
+      owner: req.user.id,
+      name: row.name,
+      email,
+      phone: row.phone,
+      lists: [],
+      isSampleData: true,
+    });
+    await Promise.all(listIds.map((lid) => attachContactToList(req.user.id, contact._id, lid)));
+    inserted.push(contact._id);
+  }
+
+  return res.status(201).json({
+    inserted: inserted.length,
+    alreadyExists: false,
+    message: "Sample data added successfully",
+  });
 };
 
 exports.bulkContacts = async (req, res) => {
@@ -411,14 +495,90 @@ exports.addContactsToList = async (req, res) => {
   return res.json({ modifiedCount: modified, matchedCount: modified });
 };
 
+exports.bulkAssignContactsToLists = async (req, res) => {
+  const rawContactIds = Array.isArray(req.body.contactIds) ? req.body.contactIds : [];
+  const rawListIds = Array.isArray(req.body.listIds) ? req.body.listIds : [];
+
+  const contactIds = [...new Set(rawContactIds.map((id) => String(id || "").trim()).filter(Boolean))];
+  const listIds = [...new Set(rawListIds.map((id) => String(id || "").trim()).filter(Boolean))];
+
+  if (!contactIds.length) return res.status(400).json({ message: "contactIds must contain at least one id" });
+  if (!listIds.length) return res.status(400).json({ message: "listIds must contain at least one id" });
+
+  const lists = await List.find({ owner: req.user.id, _id: { $in: listIds } }).select("_id").lean();
+  if (lists.length !== listIds.length) {
+    return res.status(404).json({ message: "One or more lists were not found" });
+  }
+
+  let assignmentsAdded = 0;
+  let assignmentsSkipped = 0;
+  let contactsTouched = 0;
+
+  for (const cid of contactIds) {
+    const contact = await Contact.findOne({ _id: cid, owner: req.user.id }).select("_id lists").lean();
+    if (!contact) continue;
+    contactsTouched += 1;
+
+    const onListIds = new Set((contact.lists || []).map((lid) => String(lid)));
+
+    for (const listId of listIds) {
+      const lid = String(listId);
+      if (onListIds.has(lid)) {
+        assignmentsSkipped += 1;
+        continue;
+      }
+      await attachContactToList(req.user.id, contact._id, listId);
+      assignmentsAdded += 1;
+      onListIds.add(lid);
+    }
+  }
+
+  if (!contactsTouched) {
+    return res.status(400).json({ message: "No matching contacts found for the given ids" });
+  }
+
+  const totalPairsRequested = contactsTouched * listIds.length;
+
+  let message =
+    assignmentsAdded === 0
+      ? "All selected contacts were already on the chosen lists."
+      : assignmentsSkipped === 0
+        ? "Contacts added to selected lists"
+        : `Added ${assignmentsAdded} new list assignment${assignmentsAdded !== 1 ? "s" : ""}. ${assignmentsSkipped} ${
+            assignmentsSkipped === 1 ? "was" : "were"
+          } already on those lists (no change).`;
+
+  return res.json({
+    message,
+    contactsUpdated: contactsTouched,
+    assignmentsAdded,
+    assignmentsSkipped,
+    /** Every (contact × list) pair we evaluated (excluding unknown contacts). */
+    pairsEvaluated: totalPairsRequested,
+  });
+};
+
 exports.updateContact = async (req, res) => {
   const { name, email, phone } = req.body;
   const contact = await Contact.findOne({ _id: req.params.id, owner: req.user.id });
   if (!contact) return res.status(404).json({ message: "Contact not found" });
 
-  if (name != null) contact.name = String(name).trim();
-  if (email != null) contact.email = String(email).toLowerCase().trim();
-  if (phone != null) contact.phone = String(phone).trim();
+  const nameTrim = name != null ? String(name).trim() : "";
+  const emailTrim = email != null ? String(email).toLowerCase().trim() : "";
+  const phoneTrim = phone != null ? String(phone).trim() : "";
+
+  if (!emailTrim) return res.status(400).json({ message: "Email is required" });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrim)) {
+    return res.status(400).json({ message: "Invalid email address" });
+  }
+  if (!phoneTrim) return res.status(400).json({ message: "Phone is required" });
+
+  const dup = await Contact.findOne({ owner: req.user.id, email: emailTrim, _id: { $ne: contact._id } });
+  if (dup) return res.status(409).json({ message: "A contact with this email already exists" });
+
+  contact.name = nameTrim;
+  contact.email = emailTrim;
+  contact.phone = phoneTrim;
   await contact.save();
 
   const populated = await Contact.findById(contact._id).populate("lists", "name");
@@ -585,45 +745,23 @@ exports.getCampaignDetails = async (req, res) => {
     sent: eventCountsRaw.sent || 0,
   };
 
-  const now = new Date();
-  const endUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
-  const startUtc = new Date(endUtc);
-  startUtc.setUTCDate(startUtc.getUTCDate() - 6);
-  startUtc.setUTCHours(0, 0, 0, 0);
-
-  const timelineAgg = await EventLog.aggregate([
-    {
-      $match: {
-        campaignId: campaignOid,
-        timestamp: { $gte: startUtc, $lte: endUtc },
-      },
-    },
-    {
-      $group: {
-        _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
-        delivered: { $sum: { $cond: [{ $eq: ["$eventType", "delivered"] }, 1, 0] } },
-        opened: { $sum: { $cond: [{ $eq: ["$eventType", "opened"] }, 1, 0] } },
-        clicked: { $sum: { $cond: [{ $eq: ["$eventType", "clicked"] }, 1, 0] } },
-      },
-    },
-  ]);
-
-  const dayKeys = [];
-  for (let i = 0; i < 7; i += 1) {
-    const d = new Date(startUtc);
-    d.setUTCDate(d.getUTCDate() + i);
-    dayKeys.push(d.toISOString().slice(0, 10));
-  }
-  const byDay = Object.fromEntries(timelineAgg.map((r) => [r._id, r]));
-  const timeline = dayKeys.map((date) => {
-    const row = byDay[date] || {};
-    return {
-      date,
-      delivered: row.delivered || 0,
-      opened: row.opened || 0,
-      clicked: row.clicked || 0,
-    };
-  });
+  const timelineRangeKey = normalizeRange(req.query.range);
+  const timelineBuild = await buildEngagementTimeline(EventLog, campaignOid, timelineRangeKey);
+  /** @deprecated Use timeline rows + timelineMeta; kept for older clients expecting `date` on 7d daily rows */
+  const timeline = timelineBuild.timeline.map((row) => ({
+    ...(row.granularity === "day" && row.date ? { date: row.date } : {}),
+    bucket: row.bucket,
+    dateStart: row.dateStart || null,
+    dateEnd: row.dateEnd || null,
+    granularity: row.granularity,
+    delivered: row.delivered,
+    opened: row.opened,
+    clicked: row.clicked,
+  }));
+  const timelineMeta = {
+    range: timelineBuild.range,
+    granularity: timelineBuild.granularity,
+  };
 
   const logs = await EmailLog.find({ owner: req.user.id, campaignId: campaignOid })
     .sort({ lastEventAt: -1, sentAt: -1, createdAt: -1 })
@@ -658,6 +796,7 @@ exports.getCampaignDetails = async (req, res) => {
     eventCounts,
     eventCountsRaw,
     timeline,
+    timelineMeta,
     recipients,
     contacts: recipients,
   });
@@ -886,7 +1025,7 @@ exports.getDashboardSummary = async (req, res) => {
     .lean();
 
   const contactsPromise = Contact.find({ owner })
-    .populate("lists", "name")
+    .populate("lists", "name createdAt")
     .select("lists")
     .limit(500)
     .lean();
@@ -989,8 +1128,9 @@ exports.getDashboardSummary = async (req, res) => {
       const id = String(ref?._id || ref || "");
       if (!id) return;
       const name = ref?.name || `List ${id.slice(-4)}`;
-      const prev = audienceMap.get(id) || { id, name, count: 0 };
+      const prev = audienceMap.get(id) || { id, name, count: 0, createdAt: ref?.createdAt || null };
       prev.count += 1;
+      if (ref?.createdAt) prev.createdAt = ref.createdAt;
       audienceMap.set(id, prev);
     });
   });

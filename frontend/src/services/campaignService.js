@@ -17,7 +17,16 @@ export const createCampaign = (data) => api.post("/api/campaigns", data);
 
 export const sendCampaign = (campaignId) => api.post("/api/campaigns/send", { campaignId });
 
-export const getCampaignDetails = (campaignId) => api.get(`/api/campaigns/${campaignId}/details`);
+/**
+ * @param {string} campaignId
+ * @param {{ range?: string }} [opts] range: `1d` | `7d` | `30d` | `1m` (normalized on server)
+ */
+export const getCampaignDetails = (campaignId, opts = {}) => {
+  const sp = new URLSearchParams();
+  if (opts.range) sp.set("range", String(opts.range).toLowerCase());
+  const q = sp.toString();
+  return api.get(`/api/campaigns/${campaignId}/details${q ? `?${q}` : ""}`);
+};
 export const exportCampaignData = (campaignId) =>
   api.get(`/api/campaign/${campaignId}/export`, { responseType: "blob" });
 export const getCampaignRecipientTimeline = (campaignId, email) =>

@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import Editor from "@monaco-editor/react";
-import DOMPurify from "dompurify";
-import { Clock3, Eye, FileText, Plus, Save, Trash2 } from "lucide-react";
+import { AlertTriangle, Clock3, FileText, Save, Trash2, X } from "lucide-react";
 import {
   createTemplate,
   deleteTemplate,
@@ -21,7 +20,7 @@ export default function TemplatesPage() {
   const completionDisposableRef = useRef(null);
   const [templates, setTemplates] = useState([]);
   const [activeId, setActiveId] = useState("");
-  const [tab, setTab] = useState("html");
+  const [tab, setTab] = useState("wysiwyg");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -30,6 +29,9 @@ export default function TemplatesPage() {
   const [htmlContent, setHtmlContent] = useState(defaultHtmlContent);
   const [attachments, setAttachments] = useState([]);
   const attachmentInputRef = useRef(null);
+  const [deleteModal, setDeleteModal] = useState(null);
+  const [deleteModalInput, setDeleteModalInput] = useState("");
+  const [showSampleReplaceModal, setShowSampleReplaceModal] = useState(false);
 
   const dataUrlToFile = (dataUrl, idx = 0) => {
     const arr = String(dataUrl || "").split(",");
@@ -106,6 +108,30 @@ export default function TemplatesPage() {
     load();
   }, []);
 
+  useEffect(() => {
+    if (!deleteModal) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape" && !busy) {
+        setDeleteModal(null);
+        setDeleteModalInput("");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [deleteModal, busy]);
+
+  const openDeleteTemplateModal = (t) => {
+    if (busy || !t?._id) return;
+    setDeleteModal({ id: t._id, name: String(t.name || "").trim() || "Untitled" });
+    setDeleteModalInput("");
+  };
+
+  const closeDeleteTemplateModal = () => {
+    if (busy) return;
+    setDeleteModal(null);
+    setDeleteModalInput("");
+  };
+
   const selectTemplate = (t) => {
     setActiveId(t._id);
     setName(t.name);
@@ -162,14 +188,18 @@ export default function TemplatesPage() {
     }
   };
 
-  const remove = async () => {
-    if (!activeId) return;
+  const executeTemplateDelete = async () => {
+    if (!deleteModal?.id || busy || deleteModalInput !== "DELETE") return;
+    const templateId = deleteModal.id;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      await deleteTemplate(activeId);
-      onNew();
+      await deleteTemplate(templateId);
+      const wasActive = String(activeId) === String(templateId);
+      if (wasActive) onNew();
+      setDeleteModal(null);
+      setDeleteModalInput("");
       await load();
       setNotice("Template deleted.");
     } catch (e) {
@@ -178,6 +208,8 @@ export default function TemplatesPage() {
       setBusy(false);
     }
   };
+
+  const deleteConfirmOk = deleteModalInput === "DELETE";
 
   const onPickAttachment = () => {
     attachmentInputRef.current?.click();
@@ -270,9 +302,6 @@ export default function TemplatesPage() {
           <h2 className="dashboard-title">Templates</h2>
           <p className="dashboard-subtitle">Design HTML emails with personalization variables like {"{{name}}"}.</p>
         </div>
-        <button className="danger-btn templates-new-btn" onClick={onNew}>
-          <Plus size={14} /> New Template
-        </button>
       </div>
 
       <div className="templates-layout three-col">
@@ -282,32 +311,53 @@ export default function TemplatesPage() {
               <h4>All templates</h4>
               <p>{templates.length} total</p>
             </div>
-            <button type="button" className="templates-list-add" onClick={onNew} aria-label="Create template">
-              <Plus size={16} />
+            <button
+              type="button"
+              className="templates-list-add-btn"
+              onClick={onNew}
+              disabled={busy}
+              title="Create new template"
+              aria-label="Create new template"
+            >
+              <span aria-hidden>+</span>
             </button>
           </div>
           <div className="templates-list-body">
             {templates.length ? (
               templates.map((t) => (
-                <button
+                <div
                   key={t._id}
-                  className={`template-item${activeId === t._id ? " active" : ""}`}
-                  onClick={() => selectTemplate(t)}
+                  className={`template-item-wrap${activeId === t._id ? " active" : ""}`}
                 >
-                  <span className="template-item-icon">
-                    <FileText size={14} />
-                  </span>
-                  <div className="template-item-body">
-                    <div className="template-item-top">
-                      <strong>{t.name}</strong>
-                      <span className={`template-state ${activeId === t._id ? "active" : "draft"}`}>
-                        {activeId === t._id ? "Active" : "Draft"}
-                      </span>
+                  <button type="button" className="template-item" onClick={() => selectTemplate(t)}>
+                    <span className="template-item-icon">
+                      <FileText size={14} />
+                    </span>
+                    <div className="template-item-body">
+                      <div className="template-item-top">
+                        <strong>{t.name}</strong>
+                        <span className={`template-state ${activeId === t._id ? "active" : "draft"}`}>
+                          {activeId === t._id ? "Active" : "Draft"}
+                        </span>
+                      </div>
+                      <p>{t.subject}</p>
+                      <small><Clock3 size={12} /> Updated {new Date(t.updatedAt || t.createdAt).toLocaleDateString()}</small>
                     </div>
-                    <p>{t.subject}</p>
-                    <small><Clock3 size={12} /> Updated {new Date(t.updatedAt || t.createdAt).toLocaleDateString()}</small>
-                  </div>
-                </button>
+                  </button>
+                  <button
+                    type="button"
+                    className="template-item-delete"
+                    aria-label={`Delete template ${t.name || "Untitled"}`}
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openDeleteTemplateModal(t);
+                    }}
+                  >
+                    <Trash2 size={14} strokeWidth={2} />
+                  </button>
+                </div>
               ))
             ) : (
               <div className="empty-row">No templates yet.</div>
@@ -334,16 +384,10 @@ export default function TemplatesPage() {
               <button className={tab === "wysiwyg" ? "active" : ""} onClick={() => setTab("wysiwyg")}>
                 Editor
               </button>
-              <button className={tab === "preview" ? "active" : ""} onClick={() => setTab("preview")}>
-                <Eye size={14} /> Preview
-              </button>
             </div>
             <div className="row actions-right">
               <button className="ghost-btn" onClick={onPickAttachment} disabled={busy}>
                 + Attachment
-              </button>
-              <button className="ghost-btn" onClick={remove} disabled={busy || !activeId}>
-                <Trash2 size={14} /> Delete
               </button>
               <button className="danger-btn templates-save-btn" onClick={save} disabled={busy}>
                 <Save size={14} /> {busy ? "Saving..." : "Save"}
@@ -373,13 +417,8 @@ export default function TemplatesPage() {
               onMount={handleEditorMount}
               options={editorOptions}
             />
-          ) : tab === "wysiwyg" ? (
-            <EmailEditor key={activeId || "new-template"} value={htmlContent} onChange={setHtmlContent} />
           ) : (
-            <div
-              className="template-preview"
-              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(htmlContent) }}
-            />
+            <EmailEditor key={activeId || "new-template"} value={htmlContent} onChange={setHtmlContent} />
           )}
         </div>
 
@@ -397,6 +436,79 @@ export default function TemplatesPage() {
         tabIndex={-1}
         aria-hidden="true"
       />
+
+      {deleteModal ? (
+        <div className="modal-overlay template-delete-overlay" onClick={() => !busy && closeDeleteTemplateModal()}>
+          <div
+            className="contact-modal template-delete-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="template-delete-title"
+            aria-describedby="template-delete-desc"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="template-delete-dialog__header">
+              <div className="template-delete-dialog__header-main">
+                <span className="template-delete-dialog__warn" aria-hidden="true">
+                  <AlertTriangle size={22} strokeWidth={2.25} />
+                </span>
+                <div className="template-delete-dialog__titles">
+                  <h3 id="template-delete-title">Delete template</h3>
+                  <p id="template-delete-desc">
+                    This will permanently remove the template and all of its associated data. This action cannot be undone.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="template-delete-dialog__close"
+                onClick={closeDeleteTemplateModal}
+                aria-label="Close"
+                disabled={busy}
+              >
+                <X size={18} strokeWidth={2} />
+              </button>
+            </div>
+
+            <div className="template-delete-dialog__info">
+              <span className="template-delete-dialog__info-label">Template</span>
+              <strong className="template-delete-dialog__info-name">{deleteModal.name}</strong>
+            </div>
+
+            <div className="template-delete-dialog__body">
+              <label className="template-delete-dialog__field" htmlFor="template-delete-confirm-input">
+                <span className="template-delete-dialog__field-label">To confirm, type DELETE below</span>
+                <input
+                  id="template-delete-confirm-input"
+                  className="template-delete-dialog__input"
+                  value={deleteModalInput}
+                  onChange={(e) => setDeleteModalInput(e.target.value)}
+                  placeholder="DELETE"
+                  autoComplete="off"
+                  autoFocus
+                  disabled={busy}
+                  spellCheck={false}
+                />
+              </label>
+            </div>
+
+            <div className="template-delete-dialog__footer">
+              <button type="button" className="template-delete-dialog__btn-cancel" onClick={closeDeleteTemplateModal} disabled={busy}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="template-delete-dialog__btn-delete"
+                onClick={() => executeTemplateDelete()}
+                disabled={busy || !deleteConfirmOk}
+              >
+                <Trash2 size={16} strokeWidth={2} aria-hidden />
+                {busy ? "Deleting…" : "Delete template"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

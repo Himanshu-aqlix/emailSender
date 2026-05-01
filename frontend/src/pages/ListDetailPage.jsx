@@ -1,8 +1,32 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
-import { AlertTriangle, ArrowUpDown, ArrowUpFromLine, Mail, Phone, Trash2, UserRoundPlus, Users, X } from "lucide-react";
-import { bulkContacts, createContact, deleteContact } from "../services/contactService";
+import {
+  AlertTriangle,
+  ArrowUpDown,
+  ArrowUpFromLine,
+  ListX,
+  Mail,
+  MoreVertical,
+  Pencil,
+  Phone,
+  Trash2,
+  UserRoundPlus,
+  Users,
+  X,
+} from "lucide-react";
+import {
+  bulkContacts,
+  createContact,
+  deleteContact,
+  removeContactFromList,
+  updateContact,
+} from "../services/contactService";
 import { getListById } from "../services/listService";
+import { formatCreatedDateTime } from "../utils/formatDateTime";
+import { errorToast, messageFromAxios, successToast } from "../utils/toast";
+
+const LIST_CONTACT_MENU_MIN_WIDTH = 236;
 
 export default function ListDetailPage() {
   const { id } = useParams();
@@ -21,9 +45,22 @@ export default function ListDetailPage() {
   const [importFile, setImportFile] = useState(null);
   const [importSubmitting, setImportSubmitting] = useState(false);
   const [importError, setImportError] = useState("");
-  const [deleteTarget, setDeleteTarget] = useState(null);
   const [sortBy, setSortBy] = useState("newest");
   const [filterBy, setFilterBy] = useState("all");
+
+  const [openContactMenuRowId, setOpenContactMenuRowId] = useState(null);
+  const [contactMenuCoords, setContactMenuCoords] = useState(null);
+  const contactMenuTriggerRef = useRef(null);
+  const [editTarget, setEditTarget] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", email: "", phone: "" });
+  const [editError, setEditError] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+
+  const [removeTarget, setRemoveTarget] = useState(null);
+  const [removeSubmitting, setRemoveSubmitting] = useState(false);
+
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -32,9 +69,10 @@ export default function ListDetailPage() {
       const { data } = await getListById(id);
       setListName(data?.name || `List ${String(id).slice(-6)}`);
       setContacts(Array.isArray(data?.contacts) ? data.contacts : []);
-    } catch {
+    } catch (e) {
       setListName("");
       setContacts([]);
+      errorToast(messageFromAxios(e, "Something went wrong"));
     } finally {
       setLoading(false);
     }
@@ -43,6 +81,58 @@ export default function ListDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useLayoutEffect(() => {
+    if (!openContactMenuRowId) {
+      setContactMenuCoords(null);
+      return undefined;
+    }
+    const layoutMenu = () => {
+      const trigger = contactMenuTriggerRef.current;
+      if (!trigger?.getBoundingClientRect) return;
+      const rect = trigger.getBoundingClientRect();
+      const gutter = 8;
+      let left = rect.right - LIST_CONTACT_MENU_MIN_WIDTH;
+      left = Math.max(gutter, Math.min(left, window.innerWidth - LIST_CONTACT_MENU_MIN_WIDTH - gutter));
+      let top = rect.bottom + 4;
+      const estHeight = 280;
+      if (top + estHeight > window.innerHeight - gutter) {
+        top = Math.max(gutter, rect.top - estHeight - 4);
+      }
+      setContactMenuCoords({ top, left });
+    };
+    layoutMenu();
+    window.addEventListener("scroll", layoutMenu, true);
+    window.addEventListener("resize", layoutMenu);
+    return () => {
+      window.removeEventListener("scroll", layoutMenu, true);
+      window.removeEventListener("resize", layoutMenu);
+    };
+  }, [openContactMenuRowId]);
+
+  useEffect(() => {
+    if (!openContactMenuRowId) return undefined;
+    const onDoc = (e) => {
+      if (
+        e.target.closest?.("[data-contact-row-actions-root]") ||
+        e.target.closest?.("[data-contact-row-dropdown-portal]")
+      ) {
+        return;
+      }
+      setOpenContactMenuRowId(null);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [openContactMenuRowId]);
+
+  useEffect(() => {
+    if (!openContactMenuRowId) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") setOpenContactMenuRowId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openContactMenuRowId]);
 
   useEffect(() => {
     if (showAddModal) setAddError("");
@@ -54,6 +144,104 @@ export default function ListDetailPage() {
       setImportError("");
     }
   }, [showImportModal]);
+
+  useEffect(() => {
+    if (editTarget) {
+      setEditForm({
+        name: editTarget.name || "",
+        email: editTarget.email || "",
+        phone: editTarget.phone || "",
+      });
+      setEditError("");
+    }
+  }, [editTarget]);
+
+  const closeContactMenu = () => setOpenContactMenuRowId(null);
+
+  const openEditFromMenu = (c) => {
+    closeContactMenu();
+    setEditTarget(c);
+  };
+
+  const openRemoveFromMenu = (c) => {
+    closeContactMenu();
+    setRemoveTarget(c);
+  };
+
+  const openDeleteFromMenu = (c) => {
+    closeContactMenu();
+    setDeleteTarget(c);
+  };
+
+  const emailValid = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || "").trim());
+
+  const confirmEditContact = async () => {
+    if (!editTarget?._id) return;
+    const nameTrim = editForm.name.trim();
+    const emailTrim = editForm.email.trim().toLowerCase();
+    const phoneTrim = editForm.phone.trim();
+
+    if (!emailTrim || !phoneTrim) {
+      setEditError("Email and phone are required.");
+      return;
+    }
+    if (!emailValid(emailTrim)) {
+      setEditError("Please enter a valid email address.");
+      return;
+    }
+
+    setEditSaving(true);
+    setEditError("");
+    try {
+      await updateContact(editTarget._id, {
+        name: nameTrim,
+        email: emailTrim,
+        phone: phoneTrim,
+      });
+      setEditTarget(null);
+      await load();
+      window.dispatchEvent(new Event("contacts:refresh"));
+      successToast("Contact updated successfully");
+    } catch (e) {
+      setEditError(messageFromAxios(e, "Something went wrong"));
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  const confirmRemoveFromList = async () => {
+    if (!removeTarget?._id || !id || removeSubmitting) return;
+    setRemoveSubmitting(true);
+    try {
+      await removeContactFromList(id, removeTarget._id);
+      successToast("Removed from list");
+      setRemoveTarget(null);
+      await load();
+      window.dispatchEvent(new Event("contacts:refresh"));
+      window.dispatchEvent(new Event("lists:refresh"));
+    } catch (e) {
+      errorToast(messageFromAxios(e, "Something went wrong"));
+    } finally {
+      setRemoveSubmitting(false);
+    }
+  };
+
+  const confirmDeleteContact = async () => {
+    if (!deleteTarget?._id || deleteSubmitting) return;
+    setDeleteSubmitting(true);
+    try {
+      await deleteContact(deleteTarget._id);
+      successToast("Contact deleted");
+      setDeleteTarget(null);
+      await load();
+      window.dispatchEvent(new Event("contacts:refresh"));
+      window.dispatchEvent(new Event("lists:refresh"));
+    } catch (e) {
+      errorToast(messageFromAxios(e, "Something went wrong"));
+    } finally {
+      setDeleteSubmitting(false);
+    }
+  };
 
   const onAddContact = async () => {
     setAddError("");
@@ -74,6 +262,8 @@ export default function ListDetailPage() {
       setShowAddModal(false);
       setAddForm({ name: "", email: "", phone: "" });
       await load();
+      window.dispatchEvent(new Event("contacts:refresh"));
+      window.dispatchEvent(new Event("lists:refresh"));
     } catch (e) {
       setAddError(e?.response?.data?.message || "Failed to add contact");
     } finally {
@@ -95,6 +285,8 @@ export default function ListDetailPage() {
       setShowImportModal(false);
       setImportFile(null);
       await load();
+      window.dispatchEvent(new Event("contacts:refresh"));
+      window.dispatchEvent(new Event("lists:refresh"));
     } catch (e) {
       setImportError(e?.response?.data?.message || "Import failed");
     } finally {
@@ -103,12 +295,11 @@ export default function ListDetailPage() {
   };
 
   const canSubmitAdd = addForm.email.trim().length > 0 && addForm.phone.trim().length > 0 && !addSubmitting;
-  const onDelete = async () => {
-    if (!deleteTarget?._id) return;
-    await deleteContact(deleteTarget._id);
-    setDeleteTarget(null);
-    await load();
-  };
+  const editCanSave =
+    editForm.email.trim() &&
+    editForm.phone.trim() &&
+    emailValid(editForm.email) &&
+    !editSaving;
 
   const getInitials = (name, email) => {
     const source = String(name || email || "NA").trim();
@@ -130,6 +321,14 @@ export default function ListDetailPage() {
     });
     return rows;
   }, [contacts, filterBy, sortBy]);
+
+  const menuRowContact = useMemo(
+    () =>
+      openContactMenuRowId
+        ? displayContacts.find((c) => String(c._id) === String(openContactMenuRowId)) ?? null
+        : null,
+    [displayContacts, openContactMenuRowId]
+  );
 
   return (
     <section className="list-detail-page">
@@ -187,40 +386,118 @@ export default function ListDetailPage() {
                 <th>PHONE</th>
                 <th>LIST</th>
                 <th>ADDED</th>
-                <th></th>
+                <th className="list-detail-contact-actions-col-header" aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
               {displayContacts.map((c, idx) => {
+                const menuOpen = openContactMenuRowId === c._id;
                 return (
-                <tr key={c._id}>
-                  <td className="name-cell">
-                    <div className="list-contact-name">
-                      <span className="list-contact-avatar">{getInitials(c.name, c.email)}</span>
-                      <div>
-                        <strong>{c.name || "Unknown"}</strong>
-                        <small>Contact #{String(idx + 1).padStart(4, "0")}</small>
+                  <tr key={c._id}>
+                    <td className="name-cell">
+                      <div className="list-contact-name">
+                        <span className="list-contact-avatar">{getInitials(c.name, c.email)}</span>
+                        <div>
+                          <strong>{c.name || "Unknown"}</strong>
+                          <small>Contact #{String(idx + 1).padStart(4, "0")}</small>
+                        </div>
                       </div>
-                    </div>
-                  </td>
-                  <td><span className="list-cell-icon"><Mail size={13} /> {c.email}</span></td>
-                  <td><span className="list-cell-icon"><Phone size={13} /> {c.phone || "—"}</span></td>
-                  <td>
-                    <span className="list-pill">{listName}</span>
-                  </td>
-                  <td>{new Date(c.createdAt).toLocaleDateString()}</td>
-                  <td>
-                    <button type="button" className="delete-btn" onClick={() => setDeleteTarget(c)} aria-label="Delete contact">
-                      <Trash2 size={14} />
-                    </button>
-                  </td>
-                </tr>
+                    </td>
+                    <td><span className="list-cell-icon"><Mail size={13} /> {c.email}</span></td>
+                    <td><span className="list-cell-icon"><Phone size={13} /> {c.phone || "—"}</span></td>
+                    <td>
+                      <span className="list-pill">{listName}</span>
+                    </td>
+                    <td className="contacts-added-cell">{formatCreatedDateTime(c.createdAt)}</td>
+                    <td className="list-detail-contact-row-actions">
+                      <div data-contact-row-actions-root className="contact-row-actions-root">
+                        <button
+                          type="button"
+                          className="contact-row-actions-trigger"
+                          aria-expanded={menuOpen}
+                          aria-haspopup="menu"
+                          aria-label="Contact actions"
+                          onClick={(e) => {
+                            if (!menuOpen) contactMenuTriggerRef.current = e.currentTarget;
+                            setOpenContactMenuRowId(menuOpen ? null : c._id);
+                          }}
+                        >
+                          <MoreVertical size={18} strokeWidth={2} aria-hidden />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
-      ) : !loading ? (
+      ) : null}
+      {openContactMenuRowId && contactMenuCoords && menuRowContact
+        ? createPortal(
+            <div
+              data-contact-row-dropdown-portal
+              className="contact-row-actions-dropdown contact-row-actions-dropdown--portal contact-row-actions-dropdown--elevated"
+              role="menu"
+              aria-label="Contact actions"
+              style={{
+                position: "fixed",
+                top: contactMenuCoords.top,
+                left: contactMenuCoords.left,
+                minWidth: LIST_CONTACT_MENU_MIN_WIDTH,
+                zIndex: 10060,
+              }}
+            >
+              <div className="contact-row-actions-dropdown__heading">Contact</div>
+              <button
+                type="button"
+                className="contact-row-actions-item"
+                role="menuitem"
+                onClick={() => openEditFromMenu(menuRowContact)}
+              >
+                <span className="contact-row-actions-item__icon contact-row-actions-item__icon--primary" aria-hidden>
+                  <Pencil size={16} strokeWidth={2} />
+                </span>
+                <span className="contact-row-actions-item__text">
+                  <span className="contact-row-actions-item__title">Edit contact</span>
+                  <span className="contact-row-actions-item__hint">Name, email, phone</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="contact-row-actions-item"
+                role="menuitem"
+                onClick={() => openRemoveFromMenu(menuRowContact)}
+              >
+                <span className="contact-row-actions-item__icon contact-row-actions-item__icon--neutral" aria-hidden>
+                  <ListX size={16} strokeWidth={2} />
+                </span>
+                <span className="contact-row-actions-item__text">
+                  <span className="contact-row-actions-item__title">Remove from list</span>
+                  <span className="contact-row-actions-item__hint">Keeps contact in account</span>
+                </span>
+              </button>
+              <div className="contact-row-actions-divider" role="separator" />
+              <button
+                type="button"
+                className="contact-row-actions-item contact-row-actions-item--danger"
+                role="menuitem"
+                onClick={() => openDeleteFromMenu(menuRowContact)}
+              >
+                <span className="contact-row-actions-item__icon contact-row-actions-item__icon--danger" aria-hidden>
+                  <Trash2 size={16} strokeWidth={2} />
+                </span>
+                <span className="contact-row-actions-item__text">
+                  <span className="contact-row-actions-item__title">Delete contact</span>
+                  <span className="contact-row-actions-item__hint">Removes from all lists</span>
+                </span>
+              </button>
+            </div>,
+            document.body
+          )
+        : null}
+
+      {!contacts.length && !loading ? (
         <div className="contacts-empty">
           <div className="contacts-empty-icon">
             <Users size={24} />
@@ -234,6 +511,159 @@ export default function ListDetailPage() {
             <button type="button" className="import-btn" onClick={() => setShowImportModal(true)}>
               <ArrowUpFromLine size={14} /> Import Excel
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {editTarget ? (
+        <div
+          className="modal-overlay import-modal-overlay"
+          onClick={() => !editSaving && setEditTarget(null)}
+        >
+          <div
+            className="contact-modal small import-modal add-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-contact-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="import-modal-header">
+              <div>
+                <h3 id="edit-contact-title">Edit contact</h3>
+                <p id="edit-contact-desc" style={{ margin: "6px 0 0", color: "#64748b", fontSize: 14 }}>
+                  Lists are unchanged unless you edit them elsewhere.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="modal-close import-modal-close"
+                onClick={() => !editSaving && setEditTarget(null)}
+                aria-label="Close"
+                disabled={editSaving}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="import-modal-body">
+              <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="edit-contact-name">
+                  Name
+                </label>
+                <input
+                  id="edit-contact-name"
+                  className="import-modal-input"
+                  value={editForm.name}
+                  onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                  placeholder="Jane Cooper"
+                  disabled={editSaving}
+                  autoComplete="name"
+                  autoFocus
+                />
+              </div>
+              <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="edit-contact-email">
+                  Email <span className="import-modal-required" aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="edit-contact-email"
+                  className="import-modal-input"
+                  type="email"
+                  value={editForm.email}
+                  onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                  disabled={editSaving}
+                  autoComplete="email"
+                />
+              </div>
+              <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="edit-contact-phone">
+                  Phone <span className="import-modal-required" aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="edit-contact-phone"
+                  className="import-modal-input"
+                  type="tel"
+                  value={editForm.phone}
+                  onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                  disabled={editSaving}
+                  autoComplete="tel"
+                />
+              </div>
+              {editError ? (
+                <p className="import-modal-inline-error" role="alert">
+                  {editError}
+                </p>
+              ) : null}
+            </div>
+            <div className="import-modal-footer import-modal-footer-stack">
+              <button
+                type="button"
+                className="import-modal-btn-secondary"
+                onClick={() => setEditTarget(null)}
+                disabled={editSaving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="import-modal-btn-primary import-modal-btn-primary-wide"
+                onClick={confirmEditContact}
+                disabled={!editCanSave}
+              >
+                {editSaving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {removeTarget ? (
+        <div
+          className="modal-overlay import-modal-overlay"
+          onClick={() => !removeSubmitting && setRemoveTarget(null)}
+        >
+          <div
+            className="contact-modal small import-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="remove-from-list-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="import-modal-header">
+              <div>
+                <h3 id="remove-from-list-title">Remove from this list?</h3>
+                <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 14 }}>
+                  <strong>{removeTarget.name || removeTarget.email}</strong> stays in your contacts; only the link to
+                  {" "}<strong>{listName}</strong> is removed.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="modal-close import-modal-close"
+                onClick={() => !removeSubmitting && setRemoveTarget(null)}
+                aria-label="Close"
+                disabled={removeSubmitting}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="import-modal-footer">
+              <button
+                type="button"
+                className="import-modal-btn-secondary"
+                onClick={() => setRemoveTarget(null)}
+                disabled={removeSubmitting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="delete-contact-btn-delete"
+                onClick={confirmRemoveFromList}
+                disabled={removeSubmitting}
+              >
+                {removeSubmitting ? "Removing…" : "Remove"}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -424,7 +854,7 @@ export default function ListDetailPage() {
       ) : null}
 
       {deleteTarget ? (
-        <div className="modal-overlay delete-modal-overlay" onClick={() => setDeleteTarget(null)}>
+        <div className="modal-overlay delete-modal-overlay" onClick={() => !deleteSubmitting && setDeleteTarget(null)}>
           <div
             className="contact-modal small delete-contact-sheet"
             role="alertdialog"
@@ -440,22 +870,37 @@ export default function ListDetailPage() {
                 </span>
                 <div className="delete-contact-head-text">
                   <h3 id="list-delete-contact-title">Delete contact</h3>
-                  <p id="list-delete-contact-desc">This removes the contact from all lists in MailPulse and cannot be undone.</p>
+                  <p id="list-delete-contact-desc">This permanently removes this person from MailPulse everywhere.</p>
                 </div>
               </div>
-              <button type="button" className="modal-close delete-contact-close" onClick={() => setDeleteTarget(null)} aria-label="Close dialog">
+              <button
+                type="button"
+                className="modal-close delete-contact-close"
+                onClick={() => !deleteSubmitting && setDeleteTarget(null)}
+                aria-label="Close dialog"
+              >
                 <X size={18} strokeWidth={2} />
               </button>
             </div>
             <p className="delete-contact-body">
-              Permanently remove <strong>{deleteTarget.name || deleteTarget.email}</strong> from your contacts?
+              Permanently remove <strong>{deleteTarget.name || deleteTarget.email}</strong> from all lists?
             </p>
             <div className="delete-contact-footer">
-              <button type="button" className="delete-contact-btn-cancel" onClick={() => setDeleteTarget(null)}>
+              <button
+                type="button"
+                className="delete-contact-btn-cancel"
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleteSubmitting}
+              >
                 Cancel
               </button>
-              <button type="button" className="delete-contact-btn-delete" onClick={onDelete}>
-                Delete contact
+              <button
+                type="button"
+                className="delete-contact-btn-delete"
+                onClick={confirmDeleteContact}
+                disabled={deleteSubmitting}
+              >
+                {deleteSubmitting ? "Deleting…" : "Delete contact"}
               </button>
             </div>
           </div>

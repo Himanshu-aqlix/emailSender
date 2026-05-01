@@ -18,14 +18,17 @@ router.post("/api/uploads/image", auth, upload.single("file"), c.uploadTemplateI
 router.post("/api/uploads/attachment", auth, upload.single("file"), c.uploadTemplateAttachment);
 router.get("/api/contacts", auth, c.getContacts);
 router.post("/api/contacts", auth, c.addSingleContact);
+router.post("/api/contacts/sample-data", auth, c.addSampleContacts);
 router.post("/api/contacts/bulk", auth, upload.single("file"), c.bulkContacts);
 router.post("/api/contacts/bulk-import-to-lists", auth, upload.single("file"), c.bulkImportToLists);
+router.post("/api/contacts/bulk-assign-lists", auth, c.bulkAssignContactsToLists);
 router.put("/api/contacts/:id", auth, c.updateContact);
 router.delete("/api/contacts/:id", auth, c.deleteContact);
 router.get("/api/lists", auth, c.getLists);
 router.get("/api/lists/:id", auth, c.getListById);
 router.post("/api/lists", auth, c.createList);
 router.patch("/api/lists/:id", auth, c.renameList);
+router.delete("/api/lists/:listId/contacts/:contactId", auth, c.removeContactFromList);
 router.delete("/api/lists/:id", auth, c.deleteList);
 router.put("/api/lists/:id/add-contacts", auth, c.addContactsToList);
 router.post("/api/templates", auth, c.createTemplate);

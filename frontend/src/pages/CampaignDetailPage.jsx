@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -24,6 +24,7 @@ import {
   BarElement,
   CategoryScale,
   Chart as ChartJS,
+  Filler,
   Legend,
   LineElement,
   LinearScale,
@@ -32,7 +33,93 @@ import {
 } from "chart.js";
 import { exportCampaignData, getCampaignDetails, getCampaignRecipientTimeline } from "../services/campaignService";
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend, Filler);
+
+const ENG_COLORS = {
+  delivered: { line: "#2563eb", rgb: "37, 99, 235" },
+  opened: { line: "#10b981", rgb: "16, 185, 129" },
+  clicked: { line: "#f59e0b", rgb: "245, 158, 11" },
+};
+
+/** @param {{ chart?: import("chart.js").Chart }} chartCtx */
+function lineAreaGradient(chartCtx, rgb) {
+  const chart = chartCtx?.chart;
+  const { ctx, chartArea } = chart || {};
+  if (!chartArea || !ctx) return `rgba(${rgb}, 0.08)`;
+  const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+  g.addColorStop(0, `rgba(${rgb}, 0.28)`);
+  g.addColorStop(1, `rgba(${rgb}, 0.02)`);
+  return g;
+}
+
+function formatEngagementAxisLabel(row) {
+  if (!row || typeof row !== "object") return "";
+  const g = row.granularity || "";
+
+  if (g === "hour" && typeof row.bucket === "string") {
+    const parts = row.bucket.split("-");
+    if (parts.length !== 4) return row.bucket;
+    const utc = Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), Number(parts[3]));
+    return new Date(utc).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  if (g === "day" && row.date)
+    return new Date(`${String(row.date).slice(0, 10)}T12:00:00Z`).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+
+  if (g === "week" && row.dateStart && row.dateEnd) {
+    const a = new Date(`${row.dateStart}T12:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const b = new Date(`${row.dateEnd}T12:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return `${a}–${b}`;
+  }
+
+  return row.bucket || row.date || "—";
+}
+
+function tooltipTitleFromTimelineRow(row) {
+  if (!row || typeof row !== "object") return "";
+  const g = row.granularity || "";
+  if (g === "hour" && typeof row.bucket === "string") {
+    const parts = row.bucket.split("-");
+    if (parts.length !== 4) return row.bucket;
+    const utc = Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), Number(parts[3]));
+    return new Date(utc).toLocaleString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+  if (g === "day" && row.date) {
+    return new Date(`${String(row.date).slice(0, 10)}T12:00:00Z`).toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  }
+  if (g === "week" && row.dateStart && row.dateEnd) {
+    const a = new Date(`${row.dateStart}T12:00:00Z`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    const b = new Date(`${row.dateEnd}T12:00:00Z`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+    return `${a} – ${b}`;
+  }
+  return String(row.bucket || row.date || "");
+}
+
+function timelineHasCounts(rows) {
+  if (!rows?.length) return false;
+  return rows.some((r) => Number(r.delivered || 0) + Number(r.opened || 0) + Number(r.clicked || 0) > 0);
+}
+
+function subtitleForEngagement(rangeKey, granularity) {
+  if (rangeKey === "1d") return "Last 24 hours · hourly";
+  if (rangeKey === "30d" || granularity === "week") return "Last 30 days · weekly";
+  return "Last 7 days · daily";
+}
 
 const toPct = (value, total) => (total ? ((value / total) * 100).toFixed(1) : "0.0");
 
@@ -52,6 +139,7 @@ const defaultData = {
   stats: { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 },
   eventCounts: {},
   timeline: [],
+  timelineMeta: { range: "7d", granularity: "day" },
   recipients: [],
 };
 
@@ -103,6 +191,8 @@ const getEventStyle = (type) => {
 export default function CampaignDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const engagementRangeRef = useRef("7d");
+  const engagementFetchGen = useRef(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -112,19 +202,28 @@ export default function CampaignDetailPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loadingTimeline, setLoadingTimeline] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [engagementRange, setEngagementRange] = useState("7d");
+  const [engagementChartBusy, setEngagementChartBusy] = useState(false);
+
+  useEffect(() => {
+    engagementRangeRef.current = engagementRange;
+  }, [engagementRange]);
 
   const load = useCallback(async (opts = { silent: false }) => {
     if (!opts.silent) setLoading(true);
     else setRefreshing(true);
     setError("");
     try {
-      const res = await getCampaignDetails(id);
+      const rangeAtStart = engagementRangeRef.current;
+      const res = await getCampaignDetails(id, { range: rangeAtStart });
+      if (engagementRangeRef.current !== rangeAtStart) return;
       const payload = res.data || {};
       setData({
         campaign: payload.campaign,
         stats: payload.stats || defaultData.stats,
         eventCounts: payload.eventCounts || {},
         timeline: Array.isArray(payload.timeline) ? payload.timeline : [],
+        timelineMeta: payload.timelineMeta || defaultData.timelineMeta,
         recipients: Array.isArray(payload.recipients) ? payload.recipients : payload.contacts || [],
       });
     } catch (e) {
@@ -132,6 +231,28 @@ export default function CampaignDetailPage() {
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  }, [id]);
+
+  const pickEngagementRange = useCallback(async (nextRange) => {
+    if (!id || nextRange === engagementRangeRef.current) return;
+    engagementRangeRef.current = nextRange;
+    setEngagementRange(nextRange);
+    const gen = (engagementFetchGen.current += 1);
+    setEngagementChartBusy(true);
+    try {
+      const res = await getCampaignDetails(id, { range: nextRange });
+      if (gen !== engagementFetchGen.current) return;
+      const payload = res.data || {};
+      setData((prev) => ({
+        ...prev,
+        timeline: Array.isArray(payload.timeline) ? payload.timeline : [],
+        timelineMeta: payload.timelineMeta || prev.timelineMeta,
+      }));
+    } catch {
+      /* keep prior timeline on error */
+    } finally {
+      if (gen === engagementFetchGen.current) setEngagementChartBusy(false);
     }
   }, [id]);
 
@@ -169,51 +290,61 @@ export default function CampaignDetailPage() {
   }, [campaign]);
 
   const engagementLine = useMemo(() => {
-    const labels =
-      timeline.length > 0
-        ? timeline.map((row) => new Date(`${row.date}T12:00:00Z`).toLocaleDateString())
-        : (() => {
-            const out = [];
-            for (let i = 6; i >= 0; i -= 1) {
-              const d = new Date();
-              d.setHours(0, 0, 0, 0);
-              d.setDate(d.getDate() - i);
-              out.push(d.toLocaleDateString());
-            }
-            return out;
-          })();
-    const delivered = timeline.length
-      ? timeline.map((r) => r.delivered)
-      : labels.map(() => 0);
-    const opened = timeline.length ? timeline.map((r) => r.opened) : labels.map(() => 0);
-    const clicked = timeline.length ? timeline.map((r) => r.clicked) : labels.map(() => 0);
+    const labels = timeline.map((row) => formatEngagementAxisLabel(row));
+    const delivered = timeline.map((r) => Number(r.delivered) || 0);
+    const opened = timeline.map((r) => Number(r.opened) || 0);
+    const clicked = timeline.map((r) => Number(r.clicked) || 0);
+    const mkSet = (metricKey, label) => ({
+      label,
+      data: { delivered, opened, clicked }[metricKey],
+      borderColor: ENG_COLORS[metricKey].line,
+      backgroundColor: (ctx) => lineAreaGradient(ctx, ENG_COLORS[metricKey].rgb),
+      tension: 0.42,
+      fill: true,
+      pointRadius: 3,
+      pointHoverRadius: 5,
+      borderWidth: 2,
+    });
     return {
       labels,
-      datasets: [
-        {
-          label: "Delivered",
-          data: delivered,
-          borderColor: "#2563eb",
-          backgroundColor: "#2563eb",
-          tension: 0.35,
-        },
-        {
-          label: "Opened",
-          data: opened,
-          borderColor: "#10b981",
-          backgroundColor: "#10b981",
-          tension: 0.35,
-        },
-        {
-          label: "Clicked",
-          data: clicked,
-          borderColor: "#f59e0b",
-          backgroundColor: "#f59e0b",
-          tension: 0.35,
-        },
-      ],
+      datasets: [mkSet("delivered", "Delivered"), mkSet("opened", "Opened"), mkSet("clicked", "Clicked")],
     };
   }, [timeline]);
+
+  const engagementOptions = useMemo(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          position: "bottom",
+          labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true, padding: 16 },
+        },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const i = items[0]?.dataIndex;
+              if (i == null || !timeline[i]) return "";
+              return tooltipTitleFromTimelineRow(timeline[i]);
+            },
+            label: (item) => `${item.dataset.label}: ${item.formattedValue}`,
+          },
+        },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxRotation: 45, minRotation: 0, autoSkip: true } },
+        y: { beginAtZero: true, ticks: { precision: 0 } },
+      },
+    }),
+    [timeline]
+  );
+
+  const hasEngagementActivity = timelineHasCounts(timeline);
+  const engagementSubtitle = subtitleForEngagement(
+    data.timelineMeta?.range ?? engagementRange,
+    data.timelineMeta?.granularity
+  );
 
   const openClickBar = {
     labels: ["Opened", "Clicked"],
@@ -225,18 +356,6 @@ export default function CampaignDetailPage() {
         borderRadius: 8,
       },
     ],
-  };
-
-  const engagementOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: { position: "bottom", labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } },
-    },
-    scales: {
-      x: { grid: { display: false } },
-      y: { beginAtZero: true, ticks: { stepSize: 1 } },
-    },
   };
 
   const barOptions = {
@@ -447,42 +566,82 @@ export default function CampaignDetailPage() {
         </div>
 
         <div className="panel analytics-card campaign-engagement-card">
+          <div className="campaign-card-head campaign-engagement-card-head">
+            <div className="campaign-engagement-head-left">
+              <h4>Engagement</h4>
+              <small>{engagementSubtitle}</small>
+            </div>
+            <div className="campaign-engagement-range" role="group" aria-label="Engagement time range">
+              {[
+                { key: "1d", label: "1D" },
+                { key: "7d", label: "7D" },
+                { key: "30d", label: "1M" },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`campaign-engagement-range-btn${engagementRange === key ? " is-active" : ""}`}
+                  onClick={() => pickEngagementRange(key)}
+                  aria-pressed={engagementRange === key}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="campaign-engagement-chart-shell">
+            {!hasEngagementActivity && !engagementChartBusy ? (
+              <div className="campaign-engagement-empty analytics-empty">
+                <div className="contacts-empty-icon">
+                  <Eye size={22} />
+                </div>
+                <h3>No activity in selected range</h3>
+                <p>Try a longer window or send more traffic to see engagement trends.</p>
+              </div>
+            ) : (
+              hasEngagementActivity ? (
+                <div className="campaign-detail-chart-wrap campaign-engagement-chart-wrap">
+                  <Line data={engagementLine} options={engagementOptions} />
+                </div>
+              ) : (
+                <div className="campaign-engagement-chart-placeholder" aria-hidden />
+              )
+            )}
+            {engagementChartBusy ? (
+              <div className="campaign-engagement-chart-skeleton" aria-busy aria-label="Loading chart">
+                <div className="campaign-engagement-skeleton-lines" />
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="campaign-events-open-row">
+        <div className="panel campaign-events-section">
           <div className="campaign-card-head">
-            <h4>Engagement</h4>
-            <small>Last 7 days · daily activity</small>
+            <div>
+              <h4>Events</h4>
+              <small>Webhook totals · toggle rows for emphasis (display only)</small>
+            </div>
           </div>
-          <div className="campaign-detail-chart-wrap">
-            <Line data={engagementLine} options={engagementOptions} />
-          </div>
-        </div>
-      </div>
-
-      <div className="panel campaign-events-section">
-        <div className="campaign-card-head">
-          <div>
-            <h4>Events</h4>
-            <small>Webhook totals · toggle rows for emphasis (display only)</small>
-          </div>
-        </div>
-        <ul className="campaign-events-list">
-          {EVENT_PANEL_ROWS.map((row) => (
-            <li
-              key={row.key}
-              className="campaign-event-row"
-            >
-              <span className="campaign-event-label">
-                {row.label}
-                <span className="campaign-event-info" title="Count from Brevo webhooks">
-                  <Info size={14} strokeWidth={2} />
+          <ul className="campaign-events-list">
+            {EVENT_PANEL_ROWS.map((row) => (
+              <li
+                key={row.key}
+                className="campaign-event-row"
+              >
+                <span className="campaign-event-label">
+                  {row.label}
+                  <span className="campaign-event-info" title="Count from Brevo webhooks">
+                    <Info size={14} strokeWidth={2} />
+                  </span>
                 </span>
-              </span>
-              <span className="campaign-event-count">{eventCounts[row.key] ?? 0}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
+                <span className="campaign-event-count">{eventCounts[row.key] ?? 0}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
 
-      <div className="campaign-detail-layout">
         <div className="panel analytics-card campaign-open-click-card">
           <div className="campaign-card-head">
             <h4>Open vs Click</h4>
@@ -502,7 +661,9 @@ export default function CampaignDetailPage() {
             </div>
           </div>
         </div>
+      </div>
 
+      <div className="campaign-recipients-row">
         <div className="panel logs-panel campaign-recipient-card">
           <div className="campaign-card-head">
             <h4>Recipients</h4>

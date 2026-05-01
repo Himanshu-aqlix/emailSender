@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, ChevronDown, Eye, Filter, Plus, Send, X } from "lucide-react";
+import { BarChart3, CheckCircle2, ChevronDown, Eye, Filter, Plus, Send, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { createCampaign, getCampaigns, sendCampaign } from "../services/campaignService";
 import { getContacts } from "../services/contactService";
@@ -215,8 +215,14 @@ export default function CampaignsPage() {
                 <td>{new Date(c.createdAt).toLocaleDateString()}</td>
                 <td>{c.status === "completed" ? new Date(c.updatedAt).toLocaleDateString() : "—"}</td>
                 <td>
-                  <button type="button" className="ghost-btn campaigns-view-btn" onClick={() => navigate(`/campaigns/${c._id}`)}>
-                    <Eye size={14} /> View
+                  <button
+                    type="button"
+                    className="ghost-btn campaigns-analytics-btn"
+                    onClick={() => navigate(`/campaigns/${c._id}`)}
+                    aria-label={`Analytics for ${c.name || "campaign"}`}
+                    title="Analytics"
+                  >
+                    <BarChart3 size={18} strokeWidth={2} aria-hidden />
                   </button>
                 </td>
               </tr>

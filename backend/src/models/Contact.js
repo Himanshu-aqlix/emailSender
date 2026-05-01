@@ -8,6 +8,8 @@ const ContactSchema = new mongoose.Schema(
     phone: { type: String, trim: true, default: "" },
     lists: [{ type: mongoose.Schema.Types.ObjectId, ref: "List", index: true }],
     fields: { type: mongoose.Schema.Types.Mixed, default: {} },
+    /** True when created via POST /api/contacts/sample-data (demo seeding UX). */
+    isSampleData: { type: Boolean, default: false, index: true },
   },
   { timestamps: true }
 );

@@ -4,6 +4,7 @@ import { Bar, Line } from "react-chartjs-2";
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend } from "chart.js";
 import { AlertTriangle, CheckCircle2, ChevronRight, Eye, RefreshCw, Send, Sparkles, Users } from "lucide-react";
 import { getDashboardSummary } from "../services/statsService";
+import { formatCreatedDateTime } from "../utils/formatDateTime";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend);
 
@@ -416,7 +417,12 @@ export default function DashboardPage() {
               return (
                 <div key={row.id} className="audience-row">
                   <div className="audience-row-top">
-                    <strong>{row.name}</strong>
+                    <div className="audience-row-name">
+                      <strong>{row.name}</strong>
+                      {row.createdAt ? (
+                        <small className="audience-row-created">Created {formatCreatedDateTime(row.createdAt)}</small>
+                      ) : null}
+                    </div>
                     <span>{row.count}</span>
                   </div>
                   <div className="audience-bar">

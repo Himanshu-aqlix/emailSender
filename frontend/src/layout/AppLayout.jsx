@@ -18,6 +18,7 @@ import {
 import { getMe } from "../services/authService";
 import { deleteList, getLists, renameList } from "../services/listService";
 import { avatarGradientForEmail, formatDisplayName, initialsFromEmail, readStoredUser } from "../utils/userDisplay";
+import { formatCreatedDateTime } from "../utils/formatDateTime";
 
 const navAfterLists = [
   { key: "templates", icon: FileText, label: "Templates" },
@@ -217,7 +218,11 @@ export default function AppLayout() {
                         className={({ isActive }) =>
                           `app-sidebar-list-link${isActive ? " active" : ""}`
                         }
-                        title={list.name}
+                        title={
+                          list.createdAt
+                            ? `${list.name} — Created ${formatCreatedDateTime(list.createdAt)}`
+                            : list.name
+                        }
                       >
                         {list.name}
                       </NavLink>
@@ -357,7 +362,7 @@ export default function AppLayout() {
               <div>
                 <h3 id="delete-list-title">Delete List</h3>
                 <p id="delete-list-desc">
-                  Are you sure you want to delete this list? All contacts in this list will be permanently deleted.
+                  Are you sure you want to delete this list? Contacts remain in your account; they are only removed from this list.
                 </p>
               </div>
               <button
