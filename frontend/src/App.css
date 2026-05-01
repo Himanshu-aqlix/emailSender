@@ -4799,3 +4799,39 @@ th, td { border-bottom: 1px solid #e5e7eb; padding: 10px; text-align: left; }
 .Toastify__toast-container {
   z-index: 10050;
 }
+
+/* Reset global legacy `button { width:100% }` so Toastify close control stays top-right */
+.Toastify__toast-container button.Toastify__close-button {
+  width: auto !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 4px !important;
+  flex: 0 0 auto !important;
+  align-self: flex-start !important;
+  position: absolute !important;
+  top: 8px !important;
+  right: 10px !important;
+  left: auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-height: 0 !important;
+  border: none !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: inherit !important;
+}
+
+.Toastify__toast-container .Toastify__toast {
+  padding-right: 40px !important;
+}
+
+.Toastify__toast-container .Toastify__toast.Toastify__toast--rtl button.Toastify__close-button {
+  left: 10px !important;
+  right: auto !important;
+}
+
+.Toastify__toast-container button.Toastify__close-button:hover,
+.Toastify__toast-container button.Toastify__close-button:focus {
+  background: rgba(15, 23, 42, 0.07) !important;
+}
