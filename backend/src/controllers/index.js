@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const xlsx = require("xlsx");
@@ -16,6 +17,54 @@ const { enqueueCampaign } = require("../queues/emailQueue");
 const { normalizeRange, buildEngagementTimeline } = require("../utils/campaignEngagementTimeline");
 
 const sign = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+
+/** Daily sent/opened/clicked from EmailLog (same semantics as dashboard KPIs). */
+const buildEmailLogWeeklyStats = async (ownerId, startUtc, endUtc, daysCount) => {
+  const ownerOid = new mongoose.Types.ObjectId(String(ownerId));
+  const days = [];
+  for (let i = 0; i < daysCount; i += 1) {
+    const d = new Date(startUtc);
+    d.setUTCDate(d.getUTCDate() + i);
+    days.push(d.toISOString().slice(0, 10));
+  }
+
+  const dayStr = (field) => ({
+    $dateToString: { format: "%Y-%m-%d", date: field, timezone: "UTC" },
+  });
+
+  const [sentByDay, openedByDay, clickedByDay] = await Promise.all([
+    EmailLog.aggregate([
+      { $match: { owner: ownerOid } },
+      { $addFields: { sendDay: { $ifNull: ["$sentAt", "$createdAt"] } } },
+      { $match: { sendDay: { $gte: startUtc, $lte: endUtc } } },
+      { $group: { _id: dayStr("$sendDay"), n: { $sum: 1 } } },
+    ]),
+    EmailLog.aggregate([
+      { $match: { owner: ownerOid, opened: true } },
+      { $addFields: { openDay: { $ifNull: ["$openedAt", { $ifNull: ["$lastEventAt", "$createdAt"] }] } } },
+      { $match: { openDay: { $gte: startUtc, $lte: endUtc } } },
+      { $group: { _id: dayStr("$openDay"), n: { $sum: 1 } } },
+    ]),
+    EmailLog.aggregate([
+      { $match: { owner: ownerOid, clicked: true } },
+      { $addFields: { clickDay: { $ifNull: ["$clickedAt", { $ifNull: ["$lastEventAt", "$createdAt"] }] } } },
+      { $match: { clickDay: { $gte: startUtc, $lte: endUtc } } },
+      { $group: { _id: dayStr("$clickDay"), n: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const toMap = (rows) => Object.fromEntries(rows.map((x) => [x._id, x.n]));
+  const sentMap = toMap(sentByDay);
+  const openedMap = toMap(openedByDay);
+  const clickedMap = toMap(clickedByDay);
+
+  return days.map((date) => ({
+    date,
+    sent: sentMap[date] || 0,
+    opened: openedMap[date] || 0,
+    clicked: clickedMap[date] || 0,
+  }));
+};
 
 const attachContactToList = async (ownerId, contactId, listId) => {
   await List.updateOne({ _id: listId, owner: ownerId }, { $addToSet: { contacts: contactId } });
@@ -89,19 +138,19 @@ exports.me = async (req, res) => {
 };
 
 exports.uploadExcel = async (req, res) => {
+  if (!req.file?.buffer) return res.status(400).json({ message: "File is required" });
+
   const listIdRaw = String(req.body.listId || "").trim();
 
-  let list;
+  let list = null;
   if (listIdRaw) {
     list = await List.findOne({ _id: listIdRaw, owner: req.user.id });
     if (!list) return res.status(404).json({ message: "List not found" });
-  } else {
-    const requestedName = (req.body.listName || `List ${Date.now()}`).trim();
-    list = await List.findOne({ owner: req.user.id, name: requestedName });
-    if (!list) list = await List.create({ owner: req.user.id, name: requestedName });
   }
 
   const parsed = parseSpreadsheetBufferToRows(req.file.buffer);
+  if (!parsed.length) return res.status(400).json({ message: "No valid rows (need email column)" });
+
   let count = 0;
   for (const row of parsed) {
     let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
@@ -110,21 +159,21 @@ exports.uploadExcel = async (req, res) => {
       if (row.phone) contact.phone = row.phone;
       Object.assign(contact.fields || {}, row.fields || {});
       await contact.save();
-      await attachContactToList(req.user.id, contact._id, list._id);
+      if (list) await attachContactToList(req.user.id, contact._id, list._id);
     } else {
       contact = await Contact.create({
         owner: req.user.id,
         name: row.name,
         email: row.email,
         phone: row.phone || "",
-        lists: [list._id],
+        lists: list ? [list._id] : [],
         fields: row.fields || {},
       });
-      await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+      if (list) await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
     }
     count += 1;
   }
-  res.status(201).json({ list, count });
+  res.status(201).json({ list: list || null, count });
 };
 exports.uploadTemplateImage = async (req, res) => {
   if (!req.file?.buffer) return res.status(400).json({ message: "Image file is required" });
@@ -174,7 +223,7 @@ exports.uploadTemplateAttachment = async (req, res) => {
 };
 exports.getContacts = async (req, res) => {
   const page = Math.max(parseInt(req.query.page || "1", 10), 1);
-  const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 100);
+  const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 10000);
   const skip = (page - 1) * limit;
 
   const filter = { owner: req.user.id };
@@ -278,17 +327,19 @@ exports.addSingleContact = async (req, res) => {
   const phoneTrim = phone != null ? String(phone).trim() : "";
   if (!phoneTrim) return res.status(400).json({ message: "Phone is required" });
 
-  let resolvedListId = listId;
-  if (!resolvedListId) {
-    if (!listName) return res.status(400).json({ message: "listId or listName is required" });
-    const listLabel = listName.trim();
-    const list =
-      (await List.findOne({ owner: req.user.id, name: listLabel })) ||
-      (await List.create({ owner: req.user.id, name: listLabel }));
-    resolvedListId = list._id;
-  } else {
-    const listOk = await List.findOne({ _id: resolvedListId, owner: req.user.id });
+  const listIdRaw = listId ? String(listId).trim() : "";
+  const listNameRaw = listName != null ? String(listName).trim() : "";
+
+  let resolvedListId = null;
+  if (listIdRaw) {
+    const listOk = await List.findOne({ _id: listIdRaw, owner: req.user.id });
     if (!listOk) return res.status(400).json({ message: "Invalid list" });
+    resolvedListId = listOk._id;
+  } else if (listNameRaw) {
+    const list =
+      (await List.findOne({ owner: req.user.id, name: listNameRaw })) ||
+      (await List.create({ owner: req.user.id, name: listNameRaw }));
+    resolvedListId = list._id;
   }
 
   const emailNorm = String(email).toLowerCase().trim();
@@ -299,17 +350,19 @@ exports.addSingleContact = async (req, res) => {
     contact.phone = phoneTrim;
     Object.assign(contact.fields || {}, fields);
     await contact.save();
-    await attachContactToList(req.user.id, contact._id, resolvedListId);
+    if (resolvedListId) await attachContactToList(req.user.id, contact._id, resolvedListId);
   } else {
     contact = await Contact.create({
       owner: req.user.id,
       name: (name || "").trim(),
       email: emailNorm,
       phone: phoneTrim,
-      lists: [resolvedListId],
+      lists: resolvedListId ? [resolvedListId] : [],
       fields,
     });
-    await List.updateOne({ _id: resolvedListId }, { $addToSet: { contacts: contact._id } });
+    if (resolvedListId) {
+      await List.updateOne({ _id: resolvedListId }, { $addToSet: { contacts: contact._id } });
+    }
   }
 
   const populated = await Contact.findById(contact._id).populate("lists", "name");
@@ -353,7 +406,7 @@ exports.addSampleContacts = async (req, res) => {
 
   for (let i = 0; i < SAMPLE_CONTACT_ROWS.length; i += 1) {
     const row = SAMPLE_CONTACT_ROWS[i];
-    const email = `demo.${nonce}.${i}@mailpulse.sample`.toLowerCase();
+    const email = `demo.${nonce}.${i}@sendrofy.sample`.toLowerCase();
     const listIds = pickRandomListSubset();
     const contact = await Contact.create({
       owner: req.user.id,
@@ -763,19 +816,75 @@ exports.getCampaignDetails = async (req, res) => {
     granularity: timelineBuild.granularity,
   };
 
-  const logs = await EmailLog.find({ owner: req.user.id, campaignId: campaignOid })
-    .sort({ lastEventAt: -1, sentAt: -1, createdAt: -1 })
-    .lean();
+  /** ObjectIds required here: Mongoose casts `find()` filters but not `aggregate()` $match. */
+  const ownerOid = new mongoose.Types.ObjectId(String(req.user.id));
+  const logMatch = { owner: ownerOid, campaignId: campaignOid };
 
-  const st = (s) => String(s || "").toLowerCase();
-  const stats = {
-    sent: logs.length,
-    delivered: logs.filter((l) => ["delivered", "opened", "clicked"].includes(st(l.status))).length,
-    opened: logs.filter((l) => l.opened || ["opened", "clicked"].includes(st(l.status))).length,
-    clicked: logs.filter((l) => l.clicked || st(l.status) === "clicked").length,
-    bounced: logs.filter((l) => st(l.status) === "bounced").length,
-    failed: logs.filter((l) => ["failed", "error"].includes(st(l.status))).length,
-  };
+  const [statsRow] = await EmailLog.aggregate([
+    { $match: logMatch },
+    { $addFields: { sl: { $toLower: { $ifNull: ["$status", ""] } } } },
+    {
+      $group: {
+        _id: null,
+        sent: { $sum: 1 },
+        delivered: {
+          $sum: {
+            $cond: [{ $in: ["$sl", ["delivered", "opened", "clicked"]] }, 1, 0],
+          },
+        },
+        opened: {
+          $sum: {
+            $cond: [
+              {
+                $or: [{ $eq: ["$opened", true] }, { $in: ["$sl", ["opened", "clicked"]] }],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+        clicked: {
+          $sum: {
+            $cond: [{ $or: [{ $eq: ["$clicked", true] }, { $eq: ["$sl", "clicked"] }] }, 1, 0],
+          },
+        },
+        bounced: {
+          $sum: { $cond: [{ $eq: ["$sl", "bounced"] }, 1, 0] },
+        },
+        failed: {
+          $sum: { $cond: [{ $in: ["$sl", ["failed", "error"]] }, 1, 0] },
+        },
+      },
+    },
+  ]).exec();
+
+  const logCount = await EmailLog.countDocuments(logMatch);
+
+  const stats = statsRow
+    ? {
+        sent: logCount,
+        delivered: statsRow.delivered,
+        opened: statsRow.opened,
+        clicked: statsRow.clicked,
+        bounced: statsRow.bounced,
+        failed: statsRow.failed,
+      }
+    : { sent: logCount, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
+
+  const recipientTotal = logCount;
+  const recipientLimit = Math.min(Math.max(parseInt(req.query.recipientsLimit || "25", 10), 1), 100);
+  const recipientTotalPages = Math.max(Math.ceil(recipientTotal / recipientLimit), 1);
+  const recipientPage = Math.min(
+    Math.max(parseInt(req.query.recipientsPage || "1", 10), 1),
+    recipientTotalPages
+  );
+  const recipientSkip = (recipientPage - 1) * recipientLimit;
+
+  const logs = await EmailLog.find(logMatch)
+    .sort({ lastEventAt: -1, sentAt: -1, createdAt: -1 })
+    .skip(recipientSkip)
+    .limit(recipientLimit)
+    .lean();
 
   const recipients = logs.map((l) => ({
     _id: l._id,
@@ -790,6 +899,15 @@ exports.getCampaignDetails = async (req, res) => {
     createdAt: l.createdAt,
   }));
 
+  const recipientsPagination = {
+    page: recipientPage,
+    limit: recipientLimit,
+    total: recipientTotal,
+    totalPages: recipientTotalPages,
+    hasNextPage: recipientPage < recipientTotalPages,
+    hasPrevPage: recipientPage > 1,
+  };
+
   return res.json({
     campaign,
     stats,
@@ -799,6 +917,7 @@ exports.getCampaignDetails = async (req, res) => {
     timelineMeta,
     recipients,
     contacts: recipients,
+    recipientsPagination,
   });
 };
 
@@ -921,7 +1040,6 @@ exports.getStats = async (req, res) => {
 exports.getDashboardStats = async (req, res) => {
   const owner = req.user.id;
   const campaigns = await Campaign.find({ owner }).select("_id name").lean();
-  const campaignIds = campaigns.map((c) => c._id);
 
   const [totalSent, totalOpened, totalClicked, totalBounced] = await Promise.all([
     EmailLog.countDocuments({ owner }),
@@ -941,51 +1059,16 @@ exports.getDashboardStats = async (req, res) => {
   startUtc.setUTCDate(startUtc.getUTCDate() - 6);
   startUtc.setUTCHours(0, 0, 0, 0);
 
-  const weeklyAgg = await EventLog.aggregate([
-    {
-      $match: {
-        campaignId: { $in: campaignIds },
-        timestamp: { $gte: startUtc, $lte: endUtc },
-      },
-    },
-    {
-      $group: {
-        _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
-        sent: { $sum: { $cond: [{ $eq: ["$eventType", "sent"] }, 1, 0] } },
-        opened: { $sum: { $cond: [{ $eq: ["$eventType", "opened"] }, 1, 0] } },
-        clicked: { $sum: { $cond: [{ $eq: ["$eventType", "clicked"] }, 1, 0] } },
-      },
-    },
-  ]);
+  const weeklyStats = await buildEmailLogWeeklyStats(owner, startUtc, endUtc, 7);
 
-  const days = [];
-  for (let i = 0; i < 7; i += 1) {
-    const d = new Date(startUtc);
-    d.setUTCDate(d.getUTCDate() + i);
-    days.push(d.toISOString().slice(0, 10));
-  }
-  const weeklyByDay = Object.fromEntries(weeklyAgg.map((x) => [x._id, x]));
-  const weeklyStats = days.map((date) => {
-    const row = weeklyByDay[date] || {};
-    return {
-      date,
-      sent: row.sent || 0,
-      opened: row.opened || 0,
-      clicked: row.clicked || 0,
-    };
-  });
-
-  const campaignAgg = await EventLog.aggregate([
-    {
-      $match: {
-        campaignId: { $in: campaignIds },
-      },
-    },
+  const ownerOid = new mongoose.Types.ObjectId(String(owner));
+  const campaignAgg = await EmailLog.aggregate([
+    { $match: { owner: ownerOid } },
     {
       $group: {
         _id: "$campaignId",
-        opened: { $sum: { $cond: [{ $eq: ["$eventType", "opened"] }, 1, 0] } },
-        clicked: { $sum: { $cond: [{ $eq: ["$eventType", "clicked"] }, 1, 0] } },
+        opened: { $sum: { $cond: ["$opened", 1, 0] } },
+        clicked: { $sum: { $cond: ["$clicked", 1, 0] } },
       },
     },
     { $sort: { opened: -1, clicked: -1 } },
@@ -1015,6 +1098,8 @@ exports.getDashboardStats = async (req, res) => {
 
 exports.getDashboardSummary = async (req, res) => {
   const owner = req.user.id;
+  const rangeRaw = parseInt(String(req.query.range ?? "7"), 10);
+  const engagementDays = [1, 7, 30, 90].includes(rangeRaw) ? rangeRaw : 7;
 
   const campaignsPromise = Campaign.find({ owner })
     .populate("templateId", "name")
@@ -1032,7 +1117,6 @@ exports.getDashboardSummary = async (req, res) => {
 
   const [stats, campaigns, contacts] = await Promise.all([
     (async () => {
-      const campaignIds = (await Campaign.find({ owner }).select("_id").lean()).map((c) => c._id);
       const [totalSent, totalOpened, totalClicked, totalBounced] = await Promise.all([
         EmailLog.countDocuments({ owner }),
         EmailLog.countDocuments({ owner, opened: true }),
@@ -1047,50 +1131,19 @@ exports.getDashboardSummary = async (req, res) => {
       const now = new Date();
       const endUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
       const startUtc = new Date(endUtc);
-      startUtc.setUTCDate(startUtc.getUTCDate() - 6);
+      startUtc.setUTCDate(startUtc.getUTCDate() - (engagementDays - 1));
       startUtc.setUTCHours(0, 0, 0, 0);
 
-      const weeklyAgg = await EventLog.aggregate([
-        {
-          $match: {
-            campaignId: { $in: campaignIds },
-            timestamp: { $gte: startUtc, $lte: endUtc },
-          },
-        },
-        {
-          $group: {
-            _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
-            sent: { $sum: { $cond: [{ $eq: ["$eventType", "sent"] }, 1, 0] } },
-            opened: { $sum: { $cond: [{ $eq: ["$eventType", "opened"] }, 1, 0] } },
-            clicked: { $sum: { $cond: [{ $eq: ["$eventType", "clicked"] }, 1, 0] } },
-          },
-        },
-      ]);
+      const weeklyStats = await buildEmailLogWeeklyStats(owner, startUtc, endUtc, engagementDays);
 
-      const days = [];
-      for (let i = 0; i < 7; i += 1) {
-        const d = new Date(startUtc);
-        d.setUTCDate(d.getUTCDate() + i);
-        days.push(d.toISOString().slice(0, 10));
-      }
-      const weeklyByDay = Object.fromEntries(weeklyAgg.map((x) => [x._id, x]));
-      const weeklyStats = days.map((date) => {
-        const row = weeklyByDay[date] || {};
-        return {
-          date,
-          sent: row.sent || 0,
-          opened: row.opened || 0,
-          clicked: row.clicked || 0,
-        };
-      });
-
-      const campaignAgg = await EventLog.aggregate([
-        { $match: { campaignId: { $in: campaignIds } } },
+      const ownerOid = new mongoose.Types.ObjectId(String(owner));
+      const campaignAgg = await EmailLog.aggregate([
+        { $match: { owner: ownerOid } },
         {
           $group: {
             _id: "$campaignId",
-            opened: { $sum: { $cond: [{ $eq: ["$eventType", "opened"] }, 1, 0] } },
-            clicked: { $sum: { $cond: [{ $eq: ["$eventType", "clicked"] }, 1, 0] } },
+            opened: { $sum: { $cond: ["$opened", 1, 0] } },
+            clicked: { $sum: { $cond: ["$clicked", 1, 0] } },
           },
         },
         { $sort: { opened: -1, clicked: -1 } },

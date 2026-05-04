@@ -10,7 +10,7 @@ const sendViaBrevo = async ({ to, subject, html, logId }) => {
     await api.sendTransacEmail({
       sender: {
         email: process.env.MAIL_FROM,
-        name: "MailPulse",
+        name: "Sendrofy",
       },
       to: [{ email: to }],
       subject,

@@ -1,14 +1,18 @@
+import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { BRAND_LOGO_SRC } from "../brand";
 import { BarChart3, FileSpreadsheet, Mail, Send } from "lucide-react";
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  useEffect(() => {
+    document.title = "Sendrofy";
+  }, []);
   return (
     <div className="landing">
       <nav className="landing-nav">
         <div className="brand">
-          <img src="/favicon.ico" alt="SendPilot logo" className="brand-logo" />
-          <span>SendPilot</span>
+          <img src={BRAND_LOGO_SRC} alt="Sendrofy" className="brand-logo" />
         </div>
         <div className="landing-nav-actions">
           <button className="btn-link" onClick={() => navigate("/auth")}>

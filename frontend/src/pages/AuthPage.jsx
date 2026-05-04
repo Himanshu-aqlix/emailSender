@@ -1,11 +1,16 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { login, register } from "../services/authService";
+import { BRAND_LOGO_SRC } from "../brand";
 
 export default function AuthPage() {
   const [mode, setMode] = useState("signin");
   const [form, setForm] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    document.title = mode === "signup" ? "Create account · Sendrofy" : "Sign in · Sendrofy";
+  }, [mode]);
 
   const submit = async () => {
     setError("");
@@ -36,14 +41,13 @@ export default function AuthPage() {
     <div className="auth-split">
       <section className="auth-left">
         <div className="brand auth-brand">
-          <img src="/favicon.ico" alt="SendPilot logo" className="brand-logo" />
-          <span>SendPilot</span>
+          <img src={BRAND_LOGO_SRC} alt="Sendrofy" className="brand-logo" />
         </div>
         <div className="auth-left-copy">
           <h2>Send smarter campaigns.</h2>
           <p>Personalize at scale, track every open and click, iterate fast.</p>
         </div>
-        <small className="auth-foot">© SendPilot</small>
+        <small className="auth-foot">© Sendrofy</small>
       </section>
 
       <section className="auth-right">

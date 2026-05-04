@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { Slide, ToastContainer } from "react-toastify";
 import AppLayout from "./layout/AppLayout";
 import LoginPage from "./pages/LoginPage";
@@ -14,6 +14,11 @@ import "react-toastify/dist/ReactToastify.css";
 import "./App.css";
 
 const Protected = ({ children }) => (localStorage.getItem("token") ? children : <Navigate to="/" replace />);
+
+function CampaignDetailRoute() {
+  const { id } = useParams();
+  return <CampaignDetailPage key={id} />;
+}
 
 export default function App() {
   return (
@@ -34,7 +39,7 @@ export default function App() {
         <Route path="lists/:id" element={<ListDetailPage />} />
         <Route path="templates" element={<TemplatesPage />} />
         <Route path="campaigns" element={<CampaignsPage />} />
-        <Route path="campaigns/:id" element={<CampaignDetailPage />} />
+        <Route path="campaigns/:id" element={<CampaignDetailRoute />} />
         <Route path="analytics" element={<AnalyticsPage />} />
       </Route>
     </Routes>

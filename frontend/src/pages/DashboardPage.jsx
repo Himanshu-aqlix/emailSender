@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Bar, Line } from "react-chartjs-2";
-import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend } from "chart.js";
+import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend, Filler } from "chart.js";
 import { AlertTriangle, CheckCircle2, ChevronRight, Eye, RefreshCw, Send, Sparkles, Users } from "lucide-react";
 import { getDashboardSummary } from "../services/statsService";
 import { formatCreatedDateTime } from "../utils/formatDateTime";
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend, Filler);
 
 const tooltipBase = {
   enabled: true,
@@ -71,6 +71,7 @@ export default function DashboardPage() {
   const [audienceRows, setAudienceRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [engagementRange, setEngagementRange] = useState(7);
   const inFlightRef = useRef(false);
 
   const fetchDashboard = useCallback(async (silent = false) => {
@@ -79,7 +80,7 @@ export default function DashboardPage() {
     if (silent) setRefreshing(true);
     else setLoading(true);
     try {
-      const { data } = await getDashboardSummary();
+      const { data } = await getDashboardSummary({ range: engagementRange });
       setStats({ ...DEFAULT_DASHBOARD, ...(data || {}) });
       setCampaigns(Array.isArray(data?.campaigns) ? data.campaigns : []);
       setContactsCount(Number(data?.contactsCount || 0));
@@ -91,7 +92,7 @@ export default function DashboardPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [engagementRange]);
 
   useEffect(() => {
     fetchDashboard(false);
@@ -105,81 +106,237 @@ export default function DashboardPage() {
     return () => clearInterval(id);
   }, [fetchDashboard]);
 
-  const weeklyStats = Array.isArray(stats.weeklyStats) ? stats.weeklyStats : [];
-  const chartWeekly = weeklyStats.length
-    ? weeklyStats
-    : Array.from({ length: 7 }).map((_, i) => {
-        const d = new Date();
-        d.setDate(d.getDate() - (6 - i));
-        return { date: d.toISOString().slice(0, 10), sent: 0, opened: 0, clicked: 0 };
-      });
-  const lineData = {
-    labels: chartWeekly.map((d) => new Date(`${d.date}T12:00:00Z`).toLocaleDateString(undefined, { weekday: "short" })),
-    datasets: [
-      {
-        label: "Sent",
-        data: chartWeekly.map((d) => d.sent || 0),
-        borderColor: "#2563eb",
-        tension: 0.35,
-        pointRadius: 0,
-        pointHoverRadius: 6,
-        pointHoverBorderWidth: 2,
-        pointHoverBackgroundColor: "#fff",
-        pointHoverBorderColor: "#e11d48",
-      },
-      {
-        label: "Opened",
-        data: chartWeekly.map((d) => d.opened || 0),
-        borderColor: "#16a34a",
-        tension: 0.35,
-        pointRadius: 0,
-        pointHoverRadius: 6,
-        pointHoverBorderWidth: 2,
-        pointHoverBackgroundColor: "#fff",
-        pointHoverBorderColor: "#16a34a",
-      },
-      {
-        label: "Clicked",
-        data: chartWeekly.map((d) => d.clicked || 0),
-        borderColor: "#f59e0b",
-        tension: 0.35,
-        pointRadius: 0,
-        pointHoverRadius: 6,
-        pointHoverBorderWidth: 2,
-        pointHoverBackgroundColor: "#fff",
-        pointHoverBorderColor: "#0ea5e9",
-      },
-    ],
-  };
+  const chartWeekly = Array.isArray(stats.weeklyStats) ? stats.weeklyStats : [];
+  /** Stacked area charts do not render fills with a single x-category; use a stacked bar instead. */
+  const engagementSinglePointView = chartWeekly.length === 1;
 
-  const lineChartOptions = useMemo(
+  const engagementPeriodTotals = useMemo(() => {
+    let sent = 0;
+    let opened = 0;
+    let clicked = 0;
+    chartWeekly.forEach((row) => {
+      sent += Number(row.sent || 0);
+      opened += Number(row.opened || 0);
+      clicked += Number(row.clicked || 0);
+    });
+    const openPct = sent > 0 ? Number(((opened / sent) * 100).toFixed(1)) : 0;
+    const clickPct = sent > 0 ? Number(((clicked / sent) * 100).toFixed(1)) : 0;
+    return { sent, opened, clicked, openPct, clickPct };
+  }, [chartWeekly]);
+
+  const engagementEmpty = !loading && engagementPeriodTotals.sent + engagementPeriodTotals.opened + engagementPeriodTotals.clicked === 0;
+
+  const engagementLabels = useMemo(
+    () =>
+      chartWeekly.map((d) => {
+        const day = new Date(`${d.date}T12:00:00Z`);
+        if (engagementRange === 1) {
+          return day.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        }
+        if (engagementRange <= 7) {
+          return day.toLocaleDateString(undefined, { weekday: "short" });
+        }
+        if (engagementRange <= 30) {
+          return day.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        }
+        return day.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      }),
+    [chartWeekly, engagementRange]
+  );
+
+  const engagementChartData = useMemo(
+    () => ({
+      labels: engagementLabels,
+      datasets: [
+        {
+          label: "Sent",
+          data: chartWeekly.map((d) => d.sent || 0),
+          borderColor: "#93c5fd",
+          backgroundColor: "rgba(147, 197, 253, 0.42)",
+          fill: true,
+          tension: 0.4,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          borderWidth: 0,
+          stack: "eng",
+        },
+        {
+          label: "Opened",
+          data: chartWeekly.map((d) => d.opened || 0),
+          borderColor: "#34d399",
+          backgroundColor: "rgba(52, 211, 153, 0.4)",
+          fill: true,
+          tension: 0.4,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          borderWidth: 0,
+          stack: "eng",
+        },
+        {
+          label: "Clicked",
+          data: chartWeekly.map((d) => d.clicked || 0),
+          borderColor: "#f59e0b",
+          backgroundColor: "rgba(245, 158, 11, 0.38)",
+          fill: true,
+          tension: 0.4,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          borderWidth: 0,
+          stack: "eng",
+        },
+      ],
+    }),
+    [chartWeekly, engagementLabels]
+  );
+
+  const engagementChartOptions = useMemo(
     () => ({
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: { display: false },
+        legend: {
+          display: true,
+          position: "bottom",
+          align: "start",
+          labels: {
+            usePointStyle: true,
+            pointStyle: "rect",
+            boxWidth: 10,
+            boxHeight: 10,
+            padding: 16,
+            color: "#475569",
+            font: { size: 12, weight: "500" },
+          },
+        },
         tooltip: {
           ...tooltipBase,
           callbacks: {
-            title: (items) => items[0]?.label ?? "",
+            title: (items) => {
+              const i = items[0]?.dataIndex;
+              const raw = chartWeekly[i]?.date;
+              if (!raw) return "";
+              return new Date(`${raw}T12:00:00Z`).toLocaleDateString(undefined, {
+                weekday: "long",
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+              });
+            },
             label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y}`,
           },
         },
       },
       scales: {
         x: {
-          grid: { color: "rgba(226, 232, 240, 0.85)" },
-          ticks: { font: { size: 11 }, color: "#64748b" },
+          stacked: true,
+          grid: { display: false },
+          border: { display: false },
+          ticks: {
+            font: { size: 11 },
+            color: "#64748b",
+            maxRotation: engagementRange > 30 ? 45 : 0,
+            autoSkip: true,
+            maxTicksLimit: engagementRange > 30 ? 10 : 14,
+          },
         },
         y: {
+          stacked: true,
           beginAtZero: true,
-          grid: { color: "rgba(226, 232, 240, 0.85)" },
-          ticks: { font: { size: 11 }, color: "#64748b" },
+          grid: { display: false },
+          border: { display: false },
+          ticks: {
+            font: { size: 11 },
+            color: "#94a3b8",
+            maxTicksLimit: 5,
+            padding: 4,
+          },
         },
       },
     }),
-    []
+    [chartWeekly, engagementRange]
+  );
+
+  const engagementSingleDayBarData = useMemo(
+    () => ({
+      labels: engagementLabels,
+      datasets: [
+        {
+          label: "Sent",
+          data: chartWeekly.map((d) => d.sent || 0),
+          backgroundColor: "rgba(147, 197, 253, 0.85)",
+          borderWidth: 0,
+          stack: "eng",
+        },
+        {
+          label: "Opened",
+          data: chartWeekly.map((d) => d.opened || 0),
+          backgroundColor: "rgba(52, 211, 153, 0.85)",
+          borderWidth: 0,
+          stack: "eng",
+        },
+        {
+          label: "Clicked",
+          data: chartWeekly.map((d) => d.clicked || 0),
+          backgroundColor: "rgba(245, 158, 11, 0.85)",
+          borderWidth: 0,
+          borderRadius: 8,
+          stack: "eng",
+        },
+      ],
+    }),
+    [chartWeekly, engagementLabels]
+  );
+
+  const engagementSingleDayBarOptions = useMemo(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      datasets: {
+        bar: {
+          categoryPercentage: 0.55,
+          barPercentage: 1,
+          maxBarThickness: 160,
+        },
+      },
+      plugins: {
+        legend: engagementChartOptions.plugins.legend,
+        tooltip: {
+          ...tooltipBase,
+          callbacks: {
+            title: (items) => {
+              const i = items[0]?.dataIndex;
+              const raw = chartWeekly[i]?.date;
+              if (!raw) return "";
+              return new Date(`${raw}T12:00:00Z`).toLocaleDateString(undefined, {
+                weekday: "long",
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+              });
+            },
+            label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          stacked: true,
+          grid: { display: false },
+          border: { display: false },
+          ticks: { font: { size: 11 }, color: "#64748b" },
+        },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          grid: { display: false },
+          border: { display: false },
+          ticks: { font: { size: 11 }, color: "#94a3b8", maxTicksLimit: 6, padding: 4 },
+        },
+      },
+    }),
+    [chartWeekly, engagementChartOptions]
   );
 
   const barChartOptions = useMemo(() => {
@@ -328,10 +485,55 @@ export default function DashboardPage() {
       </div>
 
       <div className="dashboard-grid">
-        <div className="panel large">
-          <h4>Engagement — last 7 days</h4>
-          <div className="chart-box">
-            <Line data={lineData} options={lineChartOptions} />
+        <div className="panel large engagement-panel">
+          <div className="engagement-panel-head">
+            <h4>
+              {engagementRange === 1 ? "Engagement — last day" : `Engagement — last ${engagementRange} days`}
+            </h4>
+            <div className="engagement-range-toggle" role="group" aria-label="Engagement time range">
+              {[
+                { value: 1, label: "1D" },
+                { value: 7, label: "7D" },
+                { value: 30, label: "30D" },
+                { value: 90, label: "90D" },
+              ].map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`engagement-range-btn${engagementRange === value ? " engagement-range-btn-active" : ""}`}
+                  onClick={() => setEngagementRange(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="engagement-summary-strip">
+            <span>
+              <small>Total sent</small>
+              <strong>{loading ? "—" : engagementPeriodTotals.sent}</strong>
+            </span>
+            <span className="engagement-summary-divider" aria-hidden />
+            <span>
+              <small>Open rate</small>
+              <strong>{loading ? "—" : `${engagementPeriodTotals.openPct.toFixed(1)}%`}</strong>
+            </span>
+            <span className="engagement-summary-divider" aria-hidden />
+            <span>
+              <small>Click rate</small>
+              <strong>{loading ? "—" : `${engagementPeriodTotals.clickPct.toFixed(1)}%`}</strong>
+            </span>
+          </div>
+          <div className={`chart-box engagement-chart${engagementEmpty || loading ? " engagement-chart-empty" : ""}`}>
+            {loading ? <div className="engagement-chart-skeleton" aria-hidden /> : null}
+            {!loading && engagementEmpty ? <p className="engagement-empty-message">No engagement data yet</p> : null}
+            {!loading && !engagementEmpty ? (
+              engagementSinglePointView ? (
+                <Bar data={engagementSingleDayBarData} options={engagementSingleDayBarOptions} />
+              ) : (
+                <Line data={engagementChartData} options={engagementChartOptions} />
+              )
+            ) : null}
           </div>
         </div>
         <div className="panel campaign-engagement-panel">

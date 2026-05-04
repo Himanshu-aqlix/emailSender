@@ -389,7 +389,7 @@ export default function TemplatesPage() {
               <button className="ghost-btn" onClick={onPickAttachment} disabled={busy}>
                 + Attachment
               </button>
-              <button className="danger-btn templates-save-btn" onClick={save} disabled={busy}>
+              <button type="button" className="templates-save-btn" onClick={save} disabled={busy}>
                 <Save size={14} /> {busy ? "Saving..." : "Save"}
               </button>
             </div>

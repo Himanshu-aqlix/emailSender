@@ -379,10 +379,10 @@ export default function ContactsPage() {
   };
 
   const handleImportConfirm = async () => {
-    const nameTrim = importListInput.trim();
-    if (!importSelectedFile || !nameTrim || importSubmitting) return;
+    if (!importSelectedFile || importSubmitting) return;
 
-    let listId;
+    const nameTrim = importListInput.trim();
+    let listId = null;
     const pickedMatches =
       importListPicked &&
       String(importListPicked.id) &&
@@ -391,19 +391,22 @@ export default function ContactsPage() {
     setImportSubmitting(true);
     setImportModalError("");
     try {
-      if (pickedMatches) {
-        listId = String(importListPicked.id);
-      } else {
-        const { data } = await createList({ name: nameTrim });
-        listId = data?._id ? String(data._id) : null;
+      if (nameTrim) {
+        if (pickedMatches) {
+          listId = String(importListPicked.id);
+        } else {
+          const { data } = await createList({ name: nameTrim });
+          listId = data?._id ? String(data._id) : null;
+        }
+        if (!listId) {
+          setImportModalError("Could not resolve list for import.");
+          return;
+        }
       }
-      if (!listId) {
-        setImportModalError("Could not resolve list for import.");
-        return;
-      }
+
       const fd = new FormData();
       fd.append("file", importSelectedFile);
-      fd.append("listId", listId);
+      if (listId) fd.append("listId", listId);
       await uploadContactsFile(fd);
       setPage(1);
       setShowImportModal(false);
@@ -429,25 +432,27 @@ export default function ContactsPage() {
   const onAddContact = async () => {
     setError("");
     const emailTrim = addForm.email.trim();
-    const listOk = addForm.listId
-      ? true
-      : addForm.creatingNewList
-        ? addForm.listName.trim().length > 0
-        : false;
+    const listOk =
+      !addForm.creatingNewList || addForm.listName.trim().length > 0;
     if (!emailTrim || !listOk) return;
     setAddContactSubmitting(true);
     try {
-      await createContact({
+      const payload = {
         name: addForm.name.trim(),
         email: emailTrim,
         phone: addForm.phone.trim(),
-        listId: addForm.listId || undefined,
-        listName: addForm.creatingNewList ? addForm.listName.trim() : undefined,
-      });
+      };
+      if (addForm.listId) payload.listId = addForm.listId;
+      else if (addForm.creatingNewList && addForm.listName.trim()) {
+        payload.listName = addForm.listName.trim();
+      }
+      await createContact(payload);
       setShowAddModal(false);
       setAddForm({ name: "", email: "", phone: "", listId: "", listName: "", creatingNewList: false });
       setPage(1);
       await load();
+      window.dispatchEvent(new Event("lists:refresh"));
+      window.dispatchEvent(new Event("contacts:refresh"));
     } catch (e) {
       setError(e?.response?.data?.message || "Failed to add contact");
     } finally {
@@ -457,11 +462,8 @@ export default function ContactsPage() {
 
   const addContactEmailOk = addForm.email.trim().length > 0;
   const addContactPhoneOk = addForm.phone.trim().length > 0;
-  const addContactListOk = addForm.listId
-    ? true
-    : addForm.creatingNewList
-      ? addForm.listName.trim().length > 0
-      : false;
+  const addContactListOk =
+    !addForm.creatingNewList || addForm.listName.trim().length > 0;
   const canSubmitAddContact =
     addContactEmailOk && addContactPhoneOk && addContactListOk && !addContactSubmitting;
 
@@ -924,7 +926,9 @@ export default function ContactsPage() {
             <div className="import-modal-header">
               <div>
                 <h3 id="add-contact-title">Add a Contact</h3>
-                <p id="add-contact-desc">Manually add a single contact to a list.</p>
+                <p id="add-contact-desc">
+                  Manually add a single contact. List is optional—leave unselected for All contacts only.
+                </p>
               </div>
               <button
                 type="button"
@@ -983,7 +987,7 @@ export default function ContactsPage() {
               </div>
               <div className="import-modal-field add-contact-list-group">
                 <label className="import-modal-label" htmlFor="add-contact-list">
-                  List <span className="import-modal-required" aria-hidden="true">*</span>
+                  List <span className="import-modal-optional">optional</span>
                 </label>
 
                 <div className="add-contact-list-row">
@@ -1001,7 +1005,7 @@ export default function ContactsPage() {
                     }}
                     disabled={addContactSubmitting}
                   >
-                    <option value="">Select a list</option>
+                    <option value="">No list (All contacts only)</option>
                     {lists.map((l) => (
                       <option key={l._id} value={l._id}>
                         {l.name}
@@ -1189,7 +1193,7 @@ export default function ContactsPage() {
                 </span>
                 <div className="delete-contact-head-text">
                   <h3 id="delete-contact-title">Delete contact</h3>
-                  <p id="delete-contact-desc">This removes the contact from all lists in MailPulse and cannot be undone.</p>
+                  <p id="delete-contact-desc">This removes the contact from all lists in Sendrofy and cannot be undone.</p>
                 </div>
               </div>
               <button
@@ -1298,7 +1302,8 @@ export default function ContactsPage() {
                   <p className="import-modal-eyebrow">Import from Excel</p>
                   <h3 id="import-modal-title">Import contacts</h3>
                   <p id="import-modal-desc" className="import-modal-lede">
-                    Choose a destination list—or type a new name and we’ll create it. Rows need an{" "}
+                    Optionally pick or name a list; leave list blank to import into{" "}
+                    <strong className="import-modal-strong">All contacts</strong> only (no list). Rows need an{" "}
                     <strong className="import-modal-strong">email</strong> column; name and phone are optional.
                   </p>
                 </div>
@@ -1321,7 +1326,7 @@ export default function ContactsPage() {
               ) : null}
               <div className="import-modal-field import-list-combobox-root" ref={importListSuggestWrapRef}>
                 <label className="import-modal-label" htmlFor="import-list-input">
-                  List name <span className="import-modal-required" aria-hidden="true">*</span>
+                  List name <span className="import-modal-optional">optional</span>
                 </label>
                 <input
                   id="import-list-input"
@@ -1388,7 +1393,7 @@ export default function ContactsPage() {
                     ? importListPicked
                       ? "Existing list selected — contacts append to this list."
                       : "No match picked — Import will create this list name if it doesn’t exist."
-                    : "List name is required."}
+                    : "Leave blank — contacts import with no list (visible under All contacts only)."}
                 </p>
               </div>
               <div className="import-modal-field">
@@ -1434,7 +1439,7 @@ export default function ContactsPage() {
                 type="button"
                 className="import-modal-btn-primary import-modal-btn-primary--gradient"
                 onClick={handleImportConfirm}
-                disabled={importSubmitting || !importListInput.trim() || !importSelectedFile}
+                disabled={importSubmitting || !importSelectedFile}
               >
                 {importSubmitting ? "Importing…" : "Run import"}
               </button>

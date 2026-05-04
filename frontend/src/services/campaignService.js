@@ -19,11 +19,13 @@ export const sendCampaign = (campaignId) => api.post("/api/campaigns/send", { ca
 
 /**
  * @param {string} campaignId
- * @param {{ range?: string }} [opts] range: `1d` | `7d` | `30d` | `1m` (normalized on server)
+ * @param {{ range?: string; recipientsPage?: number; recipientsLimit?: number }} [opts]
  */
 export const getCampaignDetails = (campaignId, opts = {}) => {
   const sp = new URLSearchParams();
   if (opts.range) sp.set("range", String(opts.range).toLowerCase());
+  if (opts.recipientsPage != null) sp.set("recipientsPage", String(opts.recipientsPage));
+  if (opts.recipientsLimit != null) sp.set("recipientsLimit", String(opts.recipientsLimit));
   const q = sp.toString();
   return api.get(`/api/campaigns/${campaignId}/details${q ? `?${q}` : ""}`);
 };

@@ -141,7 +141,17 @@ const defaultData = {
   timeline: [],
   timelineMeta: { range: "7d", granularity: "day" },
   recipients: [],
+  recipientsPagination: {
+    page: 1,
+    limit: 25,
+    total: 0,
+    totalPages: 1,
+    hasNextPage: false,
+    hasPrevPage: false,
+  },
 };
+
+const RECIPIENT_PAGE_LIMITS = [10, 25, 50, 100];
 
 const prettyStatus = (status) => {
   const s = String(status || "draft").toLowerCase();
@@ -204,6 +214,8 @@ export default function CampaignDetailPage() {
   const [downloading, setDownloading] = useState(false);
   const [engagementRange, setEngagementRange] = useState("7d");
   const [engagementChartBusy, setEngagementChartBusy] = useState(false);
+  const [recipientPage, setRecipientPage] = useState(1);
+  const [recipientLimit, setRecipientLimit] = useState(25);
 
   useEffect(() => {
     engagementRangeRef.current = engagementRange;
@@ -215,9 +227,14 @@ export default function CampaignDetailPage() {
     setError("");
     try {
       const rangeAtStart = engagementRangeRef.current;
-      const res = await getCampaignDetails(id, { range: rangeAtStart });
+      const res = await getCampaignDetails(id, {
+        range: rangeAtStart,
+        recipientsPage: recipientPage,
+        recipientsLimit: recipientLimit,
+      });
       if (engagementRangeRef.current !== rangeAtStart) return;
       const payload = res.data || {};
+      const rp = payload.recipientsPagination || defaultData.recipientsPagination;
       setData({
         campaign: payload.campaign,
         stats: payload.stats || defaultData.stats,
@@ -225,36 +242,47 @@ export default function CampaignDetailPage() {
         timeline: Array.isArray(payload.timeline) ? payload.timeline : [],
         timelineMeta: payload.timelineMeta || defaultData.timelineMeta,
         recipients: Array.isArray(payload.recipients) ? payload.recipients : payload.contacts || [],
+        recipientsPagination: rp,
       });
+      if (typeof rp.page === "number" && rp.page > 0) {
+        setRecipientPage(rp.page);
+      }
     } catch (e) {
       setError(e?.response?.data?.message || "Unable to load campaign details.");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [id]);
+  }, [id, recipientPage, recipientLimit]);
 
-  const pickEngagementRange = useCallback(async (nextRange) => {
-    if (!id || nextRange === engagementRangeRef.current) return;
-    engagementRangeRef.current = nextRange;
-    setEngagementRange(nextRange);
-    const gen = (engagementFetchGen.current += 1);
-    setEngagementChartBusy(true);
-    try {
-      const res = await getCampaignDetails(id, { range: nextRange });
-      if (gen !== engagementFetchGen.current) return;
-      const payload = res.data || {};
-      setData((prev) => ({
-        ...prev,
-        timeline: Array.isArray(payload.timeline) ? payload.timeline : [],
-        timelineMeta: payload.timelineMeta || prev.timelineMeta,
-      }));
-    } catch {
-      /* keep prior timeline on error */
-    } finally {
-      if (gen === engagementFetchGen.current) setEngagementChartBusy(false);
-    }
-  }, [id]);
+  const pickEngagementRange = useCallback(
+    async (nextRange) => {
+      if (!id || nextRange === engagementRangeRef.current) return;
+      engagementRangeRef.current = nextRange;
+      setEngagementRange(nextRange);
+      const gen = (engagementFetchGen.current += 1);
+      setEngagementChartBusy(true);
+      try {
+        const res = await getCampaignDetails(id, {
+          range: nextRange,
+          recipientsPage: recipientPage,
+          recipientsLimit: recipientLimit,
+        });
+        if (gen !== engagementFetchGen.current) return;
+        const payload = res.data || {};
+        setData((prev) => ({
+          ...prev,
+          timeline: Array.isArray(payload.timeline) ? payload.timeline : [],
+          timelineMeta: payload.timelineMeta || prev.timelineMeta,
+        }));
+      } catch {
+        /* keep prior timeline on error */
+      } finally {
+        if (gen === engagementFetchGen.current) setEngagementChartBusy(false);
+      }
+    },
+    [id, recipientPage, recipientLimit]
+  );
 
   useEffect(() => {
     load({ silent: false });
@@ -272,14 +300,22 @@ export default function CampaignDetailPage() {
   const eventCounts = data.eventCounts || {};
   const timeline = data.timeline.length ? data.timeline : [];
   const recipients = data.recipients || [];
+  const recipientsPagination = data.recipientsPagination || defaultData.recipientsPagination;
+  const recipientTotalFromPagination = Number(recipientsPagination.total) || 0;
+  const hasRecipients = recipientTotalFromPagination > 0 || recipients.length > 0;
+  const recipientTotalLabel = Math.max(
+    recipientsPagination.total || 0,
+    stats.sent || 0,
+    recipients.length
+  );
+  const showRecipientRowsEmpty =
+    hasRecipients && recipients.length === 0 && !loading && !refreshing;
 
   const total = Math.max(stats.sent, 0);
   const openRate = toPct(stats.opened, total);
   const clickRate = toPct(stats.clicked, total);
   const deliveredRate = toPct(stats.delivered, total);
   const bounceRate = toPct(stats.bounced, total);
-
-  const recentRecipients = recipients.slice(0, 12);
 
   const listItems = useMemo(() => {
     if (!campaign) return [];
@@ -672,9 +708,13 @@ export default function CampaignDetailPage() {
         <div className="panel logs-panel campaign-recipient-card">
           <div className="campaign-card-head">
             <h4>Recipients</h4>
-            <small>Latest delivery activity</small>
+            <small>
+              {hasRecipients
+                ? `${recipientTotalLabel} recipient${recipientTotalLabel === 1 ? "" : "s"} · page ${recipientsPagination.page} of ${recipientsPagination.totalPages} · newest activity first`
+                : "Latest delivery activity"}
+            </small>
           </div>
-          {!recentRecipients.length ? (
+          {!hasRecipients ? (
             <div className="analytics-empty">
               <div className="contacts-empty-icon">
                 <Eye size={22} />
@@ -683,47 +723,106 @@ export default function CampaignDetailPage() {
               <p>Send this campaign to populate recipient-level delivery and engagement logs.</p>
             </div>
           ) : (
-            <table className="contacts-table">
-              <thead>
-                <tr>
-                  <th>Recipient</th>
-                  <th>List</th>
-                  <th>Status</th>
-                  <th>Last activity</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentRecipients.map((c) => (
-                  <tr
-                    key={c._id}
-                    className="campaign-recipient-row"
-                    onClick={() => handleRowClick(c.email)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleRowClick(c.email);
-                      }
-                    }}
-                  >
-                    <td>{c.email}</td>
-                    <td>{Array.isArray(campaign.listIds) && campaign.listIds.length ? campaign.listIds[0]?.name || "—" : campaign.listId?.name || "—"}</td>
-                    <td>
-                      <span className={statusPillClass(c.status, c.clicked, c.opened)}>
-                        {prettyStatus(c.clicked ? "clicked" : c.opened ? "opened" : c.status)}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="campaign-last-activity-inline">
-                        {c.lastEventTime ? new Date(c.lastEventTime).toLocaleString() : "—"}
-                        <ExternalLink size={13} />
-                      </span>
-                    </td>
+            <>
+              <div className="campaign-recipients-table-wrap">
+              <table className="contacts-table campaign-recipients-table">
+                <thead>
+                  <tr>
+                    <th>Recipient</th>
+                    <th>List</th>
+                    <th>Status</th>
+                    <th>Last activity</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {recipients.length === 0 && refreshing ? (
+                    <tr>
+                      <td colSpan={4} className="campaign-recipients-loading-cell">
+                        Loading recipients…
+                      </td>
+                    </tr>
+                  ) : null}
+                  {showRecipientRowsEmpty ? (
+                    <tr>
+                      <td colSpan={4} className="campaign-recipients-loading-cell">
+                        Could not load recipient rows. Try Refresh or change page size.
+                      </td>
+                    </tr>
+                  ) : null}
+                  {recipients.map((c, idx) => (
+                    <tr
+                      key={c._id != null ? String(c._id) : `${c.email}-${idx}`}
+                      className="campaign-recipient-row"
+                      onClick={() => handleRowClick(c.email)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          handleRowClick(c.email);
+                        }
+                      }}
+                    >
+                      <td>{c.email}</td>
+                      <td>{Array.isArray(campaign.listIds) && campaign.listIds.length ? campaign.listIds[0]?.name || "—" : campaign.listId?.name || "—"}</td>
+                      <td>
+                        <span className={statusPillClass(c.status, c.clicked, c.opened)}>
+                          {prettyStatus(c.clicked ? "clicked" : c.opened ? "opened" : c.status)}
+                        </span>
+                      </td>
+                      <td>
+                        <span className="campaign-last-activity-inline">
+                          {c.lastEventTime ? new Date(c.lastEventTime).toLocaleString() : "—"}
+                          <ExternalLink size={13} />
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              </div>
+              <div className="contacts-pagination campaign-recipients-pagination">
+                <label className="campaign-recipients-per-page">
+                  <span>Rows per page</span>
+                  <select
+                    value={recipientLimit}
+                    onChange={(e) => {
+                      setRecipientLimit(Number(e.target.value));
+                      setRecipientPage(1);
+                    }}
+                    disabled={refreshing}
+                    aria-label="Recipients per page"
+                  >
+                    {RECIPIENT_PAGE_LIMITS.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="campaign-recipients-pagination-nav">
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    disabled={!recipientsPagination.hasPrevPage || refreshing}
+                    onClick={() => setRecipientPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </button>
+                  <span>
+                    Page {recipientsPagination.page} of {recipientsPagination.totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    disabled={!recipientsPagination.hasNextPage || refreshing}
+                    onClick={() => setRecipientPage((p) => p + 1)}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </>
           )}
         </div>
       </div>

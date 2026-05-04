@@ -42,7 +42,7 @@ export default function CampaignsPage() {
     const [t, l, c] = await Promise.all([
       getTemplates(),
       getLists(),
-      getContacts("page=1&limit=500"),
+      getContacts("page=1&limit=10000"),
     ]);
     setTemplates(asArray(t.data));
     setLists(asArray(l.data));
@@ -123,11 +123,18 @@ export default function CampaignsPage() {
       return refs.some((l) => String(l?._id || l) === String(listId));
     }).length;
 
-  const getSelectedAudienceCount = (selectedIds) =>
-    asArray(contacts).filter((c) => {
+  /** Unique contacts (by id) that belong to at least one of the selected lists. */
+  const getSelectedAudienceCount = (selectedIds) => {
+    const selectedSet = new Set((selectedIds || []).map(String));
+    const seen = new Set();
+    for (const c of asArray(contacts)) {
+      const id = c?._id != null ? String(c._id) : "";
+      if (!id || seen.has(id)) continue;
       const refs = Array.isArray(c.lists) ? c.lists : [];
-      return refs.some((l) => selectedIds.includes(String(l?._id || l)));
-    }).length;
+      if (refs.some((l) => selectedSet.has(String(l?._id || l)))) seen.add(id);
+    }
+    return seen.size;
+  };
 
   const selectedTemplate = templates.find((t) => t._id === form.templateId);
   const selectedListIds = (form.listIds || []).map(String);
@@ -373,6 +380,7 @@ export default function CampaignsPage() {
                   <div className="campaign-list-multiselect" role="group" aria-label="Select recipient lists">
                     {lists.map((l) => {
                       const id = String(l._id);
+                      const rowCount = getListCount(l._id);
                       const checked = selectedListIds.includes(id);
                       return (
                         <label key={id} className={`campaign-list-option ${checked ? "checked" : ""}`}>
@@ -391,7 +399,9 @@ export default function CampaignsPage() {
                           />
                           <span className="campaign-list-copy">
                             <span className="campaign-list-title">{l.name}</span>
-                            <span className="campaign-list-count">{getListCount(l._id)} contacts</span>
+                            <span className="campaign-list-count">
+                              {rowCount} contact{rowCount === 1 ? "" : "s"}
+                            </span>
                           </span>
                         </label>
                       );

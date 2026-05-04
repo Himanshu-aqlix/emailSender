@@ -870,7 +870,7 @@ export default function ListDetailPage() {
                 </span>
                 <div className="delete-contact-head-text">
                   <h3 id="list-delete-contact-title">Delete contact</h3>
-                  <p id="list-delete-contact-desc">This permanently removes this person from MailPulse everywhere.</p>
+                  <p id="list-delete-contact-desc">This permanently removes this person from Sendrofy everywhere.</p>
                 </div>
               </div>
               <button

@@ -21,6 +21,7 @@ import { getMe } from "../services/authService";
 import { deleteList, getLists, renameList } from "../services/listService";
 import { avatarGradientForEmail, formatDisplayName, initialsFromEmail, readStoredUser } from "../utils/userDisplay";
 import { formatCreatedDateTime } from "../utils/formatDateTime";
+import { BRAND_LOGO_SRC } from "../brand";
 
 const navAfterLists = [
   { key: "templates", icon: FileText, label: "Templates" },
@@ -28,7 +29,7 @@ const navAfterLists = [
   { key: "analytics", icon: BarChart3, label: "Analytics" },
 ];
 
-const SIDEBAR_STORAGE_KEY = "mailpulse-sidebar-collapsed";
+const SIDEBAR_STORAGE_KEY = "sendrofy-sidebar-collapsed";
 
 export default function AppLayout() {
   const navigate = useNavigate();
@@ -121,6 +122,29 @@ export default function AppLayout() {
 
   useEffect(() => {
     if (location.pathname.startsWith("/lists/")) setListsOpen(true);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const p = location.pathname;
+    if (p.startsWith("/lists/")) {
+      document.title = "List · Sendrofy";
+      return;
+    }
+    const parts = p.replace(/^\//, "").split("/").filter(Boolean);
+    const seg = parts[0] || "dashboard";
+    if (seg === "campaigns" && parts.length >= 2) {
+      document.title = "Campaign · Sendrofy";
+      return;
+    }
+    const names = {
+      dashboard: "Dashboard",
+      contacts: "Contacts",
+      templates: "Templates",
+      campaigns: "Campaigns",
+      analytics: "Analytics",
+    };
+    const label = names[seg];
+    document.title = label ? `${label} · Sendrofy` : "Sendrofy";
   }, [location.pathname]);
 
   useEffect(() => {
@@ -227,10 +251,12 @@ export default function AppLayout() {
         aria-label="Main navigation"
       >
         <div className="app-brand">
-          <img src="/favicon.ico" alt="MailPulse" className="app-brand-logo" />
+          <div className="app-brand-mark-wrap">
+            <img src={BRAND_LOGO_SRC} alt="" className="app-brand-mark" decoding="async" />
+          </div>
           <div className="app-brand-text">
-            <strong>MailPulse</strong>
-            <small>Bulk email suite</small>
+            <span className="app-brand-title">Sendrofy</span>
+            <span className="app-brand-tagline">Smart Campaigns</span>
           </div>
         </div>
 
