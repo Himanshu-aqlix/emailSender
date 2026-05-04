@@ -227,7 +227,38 @@ exports.getContacts = async (req, res) => {
   const skip = (page - 1) * limit;
 
   const filter = { owner: req.user.id };
-  if (req.query.listId && req.query.listId !== "all") filter.lists = req.query.listId;
+
+  const listIdsParam = String(req.query.listIds || "").trim();
+  if (listIdsParam && listIdsParam !== "all") {
+    const raw = listIdsParam
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (raw.length === 1) {
+      filter.lists = raw[0];
+    } else if (raw.length > 1) {
+      filter.lists = { $in: raw };
+    }
+  } else if (req.query.listId && req.query.listId !== "all") {
+    const lid = String(req.query.listId).trim();
+    if (mongoose.Types.ObjectId.isValid(lid)) filter.lists = lid;
+  }
+
+  const createdRange = {};
+  if (req.query.dateFrom) {
+    const d = new Date(String(req.query.dateFrom));
+    if (!Number.isNaN(d.getTime())) createdRange.$gte = d;
+  }
+  if (req.query.dateTo) {
+    const d = new Date(String(req.query.dateTo));
+    if (!Number.isNaN(d.getTime())) {
+      d.setHours(23, 59, 59, 999);
+      createdRange.$lte = d;
+    }
+  }
+  if (Object.keys(createdRange).length) filter.createdAt = createdRange;
+
   if (req.query.q) {
     const q = String(req.query.q).trim();
     filter.$or = [
@@ -237,8 +268,15 @@ exports.getContacts = async (req, res) => {
     ];
   }
 
+  const sortKey = String(req.query.sort || "newest");
+  let sort = { createdAt: -1 };
+  if (sortKey === "oldest") sort = { createdAt: 1 };
+  else if (sortKey === "name_asc") sort = { name: 1, createdAt: -1 };
+  else if (sortKey === "name_desc") sort = { name: -1, createdAt: -1 };
+  else if (sortKey === "newest") sort = { createdAt: -1 };
+
   const [items, total] = await Promise.all([
-    Contact.find(filter).populate("lists", "name").sort({ createdAt: -1 }).skip(skip).limit(limit),
+    Contact.find(filter).populate("lists", "name").sort(sort).skip(skip).limit(limit),
     Contact.countDocuments(filter),
   ]);
 

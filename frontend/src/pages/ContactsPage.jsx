@@ -26,7 +26,14 @@ import {
 } from "../services/contactService";
 import { createList, getLists } from "../services/listService";
 import { formatCreatedDateTime } from "../utils/formatDateTime";
+import {
+  buildContactsQueryParams,
+  countActiveFilterKeys,
+  DEFAULT_CONTACT_FILTERS,
+  getSortLabel,
+} from "../utils/contactsFilters";
 import { errorToast, infoToast, messageFromAxios, successToast } from "../utils/toast";
+import ContactsFilter from "../components/ContactsFilter";
 
 const CONTACTS_MENU_MIN_WIDTH = 220;
 
@@ -34,10 +41,13 @@ export default function ContactsPage() {
   const [contacts, setContacts] = useState([]);
   const [lists, setLists] = useState([]);
   const [query, setQuery] = useState("");
-  const [sortBy, setSortBy] = useState("newest");
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ ...DEFAULT_CONTACT_FILTERS }));
+  const [filterDraft, setFilterDraft] = useState(() => ({ ...DEFAULT_CONTACT_FILTERS }));
   const [page, setPage] = useState(1);
   const [limit] = useState(10);
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false });
+  /** Total contacts for this account (ignores search `q`). Used to distinguish “no data” vs “no search hits”. */
+  const [accountContactTotal, setAccountContactTotal] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
   const [showBulkUpdate, setShowBulkUpdate] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -82,19 +92,50 @@ export default function ContactsPage() {
   const importWrapToolbarRef = useRef(null);
   const importWrapEmptyRef = useRef(null);
 
-  const load = async () => {
-    const params = new URLSearchParams();
-    params.set("page", String(page));
-    params.set("limit", String(limit));
-    if (query.trim()) params.set("q", query.trim());
+  const filtersSignature = useMemo(
+    () =>
+      JSON.stringify({
+        sort: appliedFilters.sort,
+        datePreset: appliedFilters.datePreset,
+        customDateFrom: appliedFilters.customDateFrom,
+        customDateTo: appliedFilters.customDateTo,
+      }),
+    [appliedFilters]
+  );
 
-    const [contactsRes, listsRes] = await Promise.all([getContacts(params.toString()), getLists()]);
+  const load = async () => {
+    const params = buildContactsQueryParams({ page, limit, q: query, filters: appliedFilters });
+    const qTrim = query.trim();
+
+    const countParams = new URLSearchParams();
+    countParams.set("page", "1");
+    countParams.set("limit", "1");
+
+    const promises = [getContacts(params.toString()), getLists()];
+    if (qTrim) {
+      promises.push(getContacts(countParams.toString()));
+    }
+
+    const results = await Promise.all(promises);
+    const contactsRes = results[0];
+    const listsRes = results[1];
     const data = contactsRes.data || {};
     setContacts(data.items || []);
     setPagination(data.pagination || { page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false });
     setLists(listsRes.data || []);
+
+    if (qTrim) {
+      const countRes = results[2];
+      const raw = countRes?.data?.pagination?.total;
+      setAccountContactTotal(typeof raw === "number" ? raw : 0);
+    } else {
+      const raw = data.pagination?.total;
+      setAccountContactTotal(typeof raw === "number" ? raw : 0);
+    }
   };
-  useEffect(() => { load(); }, [page, query]);
+  useEffect(() => {
+    load();
+  }, [page, query, filtersSignature]);
   useEffect(() => {
     const onRefresh = () => {
       setPage(1);
@@ -223,17 +264,6 @@ export default function ContactsPage() {
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [showBulkUpdate]);
-  useEffect(() => {
-    if (!showFilters) return undefined;
-    const onPointerDown = (event) => {
-      if (!filterWrapRef.current?.contains(event.target)) {
-        setShowFilters(false);
-      }
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [showFilters]);
-
   useEffect(() => {
     if (!importMenuOpen) return undefined;
     const onDown = (e) => {
@@ -419,15 +449,68 @@ export default function ContactsPage() {
     }
   };
 
-  const sorted = [...contacts].sort((a, b) => {
-    if (sortBy === "name") return (a.name || "").localeCompare(b.name || "");
-    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-  });
-
-  const displayRows = sorted;
-  const hasContacts = contacts.length > 0;
+  const displayRows = contacts;
+  const hasAnyContacts = accountContactTotal > 0;
+  const searchTrim = query.trim();
+  const hasActiveFiltersApplied = countActiveFilterKeys(appliedFilters) > 0;
+  const isSearchWithNoHits = hasAnyContacts && !displayRows.length && searchTrim.length > 0;
+  const isFilterEmptyState = hasAnyContacts && !displayRows.length && !searchTrim.length && hasActiveFiltersApplied;
   const displayedIds = useMemo(() => displayRows.map((c) => String(c._id)), [displayRows]);
   const allDisplayedSelected = displayedIds.length > 0 && displayedIds.every((id) => selectedContactIds.includes(id));
+
+  const activeFilterChips = useMemo(() => {
+    const out = [];
+    const f = appliedFilters;
+    if (f.sort !== "newest") {
+      out.push({ key: "sort", kind: "sort", label: getSortLabel(f.sort) });
+    }
+    if (f.datePreset === "7d") {
+      out.push({ key: "date", kind: "date", label: "Last 7 days" });
+    } else if (f.datePreset === "30d") {
+      out.push({ key: "date", kind: "date", label: "Last 30 days" });
+    } else if (f.datePreset === "custom" && (f.customDateFrom || f.customDateTo)) {
+      out.push({
+        key: "date",
+        kind: "date",
+        label: `Custom: ${f.customDateFrom || "…"} – ${f.customDateTo || "…"}`,
+      });
+    }
+    return out;
+  }, [appliedFilters]);
+
+  const resetAllFilters = () => {
+    const next = { ...DEFAULT_CONTACT_FILTERS };
+    setFilterDraft(next);
+    setAppliedFilters(next);
+    setPage(1);
+    setShowFilters(false);
+  };
+
+  const applyFilterDraft = () => {
+    setAppliedFilters({ ...filterDraft });
+    setPage(1);
+  };
+
+  const removeFilterChip = (chip) => {
+    if (chip.kind === "sort") {
+      setAppliedFilters((prev) => ({ ...prev, sort: "newest" }));
+      setFilterDraft((prev) => ({ ...prev, sort: "newest" }));
+    } else if (chip.kind === "date") {
+      setAppliedFilters((prev) => ({
+        ...prev,
+        datePreset: "all",
+        customDateFrom: "",
+        customDateTo: "",
+      }));
+      setFilterDraft((prev) => ({
+        ...prev,
+        datePreset: "all",
+        customDateFrom: "",
+        customDateTo: "",
+      }));
+    }
+    setPage(1);
+  };
 
   const onAddContact = async () => {
     setError("");
@@ -721,36 +804,64 @@ export default function ContactsPage() {
       {bulkError ? <p className="auth-error">{bulkError}</p> : null}
       {bulkNotice ? <p className="helper">{bulkNotice}</p> : null}
 
-      {hasContacts ? (
+      {hasAnyContacts ? (
         <div className="contacts-table-wrap">
           <div className="contacts-toolbar">
             <input
               className="contacts-search"
               placeholder="Search by name, email, or phone"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setPage(1);
+                setQuery(e.target.value);
+              }}
             />
-            <div className="toolbar-dropdown-anchor" ref={filterWrapRef}>
+            <div className="toolbar-dropdown-anchor contacts-filter-anchor" ref={filterWrapRef}>
               <button
-                className="ghost-btn"
+                type="button"
+                className={`ghost-btn contacts-filters-trigger${countActiveFilterKeys(appliedFilters) > 0 ? " has-active-filters" : ""}`}
                 onClick={() => {
                   setShowBulkUpdate(false);
-                  setShowFilters((v) => !v);
+                  setShowFilters((v) => {
+                    const next = !v;
+                    if (next) setFilterDraft({ ...appliedFilters });
+                    return next;
+                  });
                 }}
+                aria-expanded={showFilters}
               >
-                <Filter size={14} /> Filters
+                <Filter size={14} aria-hidden />
+                Filters
+                {countActiveFilterKeys(appliedFilters) > 0 ? (
+                  <span className="contacts-filters-trigger-badge">{countActiveFilterKeys(appliedFilters)}</span>
+                ) : null}
               </button>
-              {showFilters ? (
-                <div className="filters-pop filters-dropdown-pop">
-                  <label>Sort</label>
-                  <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-                    <option value="newest">Newest</option>
-                    <option value="name">Name A-Z</option>
-                  </select>
-                </div>
-              ) : null}
+              <ContactsFilter
+                open={showFilters}
+                onClose={() => setShowFilters(false)}
+                draft={filterDraft}
+                onDraftChange={setFilterDraft}
+                onApply={applyFilterDraft}
+                onReset={resetAllFilters}
+              />
             </div>
           </div>
+
+          {activeFilterChips.length > 0 ? (
+            <div className="contacts-active-filters" aria-label="Active filters">
+              {activeFilterChips.map((chip, idx) => (
+                <button
+                  key={`${chip.kind}-${chip.listId ?? chip.key}-${idx}`}
+                  type="button"
+                  className="contacts-filter-chip"
+                  onClick={() => removeFilterChip(chip)}
+                >
+                  <span>{chip.label}</span>
+                  <X size={14} strokeWidth={2.25} aria-hidden />
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           <table className="contacts-table">
             <thead>
@@ -860,7 +971,25 @@ export default function ContactsPage() {
                 document.body
               )
             : null}
-          {!displayRows.length ? <div className="empty-row">No contacts found.</div> : null}
+          {!displayRows.length ? (
+            <div
+              className={`empty-row${
+                isSearchWithNoHits || isFilterEmptyState ? " empty-row--search" : ""
+              }`}
+            >
+              {isSearchWithNoHits ? (
+                <>
+                  No results for <strong>&quot;{searchTrim}&quot;</strong>. Try a different search or clear the search box.
+                </>
+              ) : isFilterEmptyState ? (
+                <>
+                  No contacts match your filters. Try adjusting filters, or use <strong>Reset</strong> in the Filters panel.
+                </>
+              ) : (
+                "No contacts on this page."
+              )}
+            </div>
+          ) : null}
           {displayRows.length ? (
             <div className="contacts-pagination">
               <button className="ghost-btn" disabled={!pagination.hasPrevPage} onClick={() => setPage((p) => Math.max(1, p - 1))}>
