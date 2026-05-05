@@ -137,14 +137,19 @@ exports.register = async (req, res) => {
   }
 };
 exports.login = async (req, res) => {
-  const email = String(req.body?.email || "").trim().toLowerCase();
-  const password = String(req.body?.password || "");
+  const { email, password } = req.body || {};
+
+  console.log("LOGIN BODY:", req.body);
+
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password are required" });
   }
 
-  const user = await User.findOne({ email });
-  if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ message: "Invalid credentials" });
+  const safeEmail = String(email).toLowerCase().trim();
+  const safePassword = String(password);
+
+  const user = await User.findOne({ email: safeEmail });
+  if (!user || !(await bcrypt.compare(safePassword, user.password))) return res.status(401).json({ message: "Invalid credentials" });
   res.json({ token: sign(user._id), user: { id: user._id, email: user.email } });
 };
 

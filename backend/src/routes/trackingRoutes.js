@@ -47,6 +47,24 @@ router.get("/api/track/open/:campaignId/:email", async (req, res) => {
 });
 
 router.get("/api/track/click", async (req, res) => {
+  console.log("[tracking] click route hit", {
+    path: req.path,
+    method: req.method,
+    originalUrl: req.originalUrl,
+  });
+  console.log("[tracking] click full query:", req.query);
+
+  res.on("finish", () => {
+    try {
+      console.log("[tracking] click response finished", {
+        statusCode: res.statusCode,
+        headers: typeof res.getHeaders === "function" ? res.getHeaders() : "n/a",
+      });
+    } catch (e) {
+      console.error("[tracking] click finish-log error:", e?.stack || e);
+    }
+  });
+
   const campaignId = String(req.query.campaignId || req.query.cid || "");
   const email = safeDecode(req.query.email).toLowerCase().trim();
   const logId = String(req.query.logId || "");
@@ -54,10 +72,24 @@ router.get("/api/track/click", async (req, res) => {
   let redirectUrl = fallback;
 
   const rawUrl = String(req.query.redirect || req.query.url || "");
+  const decodedOnce = safeDecode(rawUrl);
+  const decodedTwice = safeDecode(decodedOnce);
+  console.log("[tracking] click redirect values", {
+    rawRedirect: rawUrl,
+    decodedRedirectOnce: decodedOnce,
+    decodedRedirectTwice: decodedTwice,
+    fallback,
+  });
   if (rawUrl) redirectUrl = safeDecode(rawUrl) || fallback;
+  console.log("[tracking] click computed redirectUrl", { redirectUrl });
 
   if (!campaignId || !email || !isValidEmail(email)) {
     console.warn("[tracking] click skipped invalid params", { campaignId, email, logId });
+    console.log("[tracking] click redirecting from invalid-params branch", {
+      location: redirectUrl || fallback,
+      statusBeforeRedirect: res.statusCode,
+      headersBeforeRedirect: typeof res.getHeaders === "function" ? res.getHeaders() : "n/a",
+    });
     return res.redirect(redirectUrl || fallback);
   }
 
@@ -79,8 +111,15 @@ router.get("/api/track/click", async (req, res) => {
     }
   } catch (error) {
     console.error("[tracking] click failed:", error?.message || error);
+    console.error("[tracking] click failed stack:", error?.stack || error);
   } finally {
+    console.log("[tracking] click about to execute res.redirect()", {
+      location: redirectUrl || fallback,
+      statusBeforeRedirect: res.statusCode,
+      headersBeforeRedirect: typeof res.getHeaders === "function" ? res.getHeaders() : "n/a",
+    });
     res.redirect(redirectUrl || fallback);
+    console.log("[tracking] click res.redirect() called");
   }
 });
 

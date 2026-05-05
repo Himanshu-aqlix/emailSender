@@ -39,18 +39,19 @@ async function applyEmailLogEventUpdate(logDoc, eventType, timestamp) {
   const event = String(eventType || "").toLowerCase();
   const $set = { lastEventAt: timestamp };
   const $inc = { [`events.${eventType}`]: 1 };
+  const currentOpenedAt = logDoc?.openedAt ? new Date(logDoc.openedAt) : null;
+  const currentClickedAt = logDoc?.clickedAt ? new Date(logDoc.clickedAt) : null;
 
   if (event === "clicked") {
     $set.status = "clicked";
     $set.clicked = true;
-    $set.clickedAt = timestamp;
-  } else if (event === "opened") {
-    if (currentStatus !== "delivered") {
-      console.log("⚠️ Ignoring open (not delivered yet)");
-      return;
-    }
+    $set.clickedAt = currentClickedAt || timestamp;
+    // Click implies open even when some clients/proxies suppress/open-pixel timing.
     $set.opened = true;
-    $set.openedAt = timestamp;
+    $set.openedAt = currentOpenedAt || timestamp;
+  } else if (event === "opened") {
+    $set.opened = true;
+    $set.openedAt = currentOpenedAt || timestamp;
     if (currentStatus !== "clicked") $set.status = "opened";
   } else if (event === "delivered") {
     if (!["clicked", "opened"].includes(currentStatus)) $set.status = "delivered";
