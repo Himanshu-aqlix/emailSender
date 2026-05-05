@@ -1,0 +1,56 @@
+useDotenv: true
+
+service: sendrofy-api
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: ap-south-1
+  stage: dev
+
+  environment:
+    PORT: ${env:PORT}
+    MONGO_URI: ${env:MONGO_URI}
+    JWT_SECRET: ${env:JWT_SECRET}
+    CLIENT_URL: ${env:CLIENT_URL}
+    API_BASE_URL: ${env:API_BASE_URL}
+    REDIS_HOST: ${env:REDIS_HOST}
+    REDIS_PORT: ${env:REDIS_PORT}
+    ENABLE_QUEUE: ${env:ENABLE_QUEUE}
+    USE_SENDGRID: ${env:USE_SENDGRID}
+    BREVO_API_KEY: ${env:BREVO_API_KEY}
+    MAIL_FROM: ${env:MAIL_FROM}
+
+functions:
+  app:
+    handler: src/lambda.handler
+    timeout: 30
+    events:
+      - http:
+          path: /
+          method: ANY
+          cors: true
+      - http:
+          path: '{proxy+}'
+          method: ANY
+          cors: true
+
+plugins:
+  - serverless-esbuild
+  - serverless-dotenv-plugin
+  - serverless-offline
+
+package:
+  patterns:
+    - '!node_modules/**'
+
+custom:
+  esbuild:
+    bundle: true
+    minify: true
+    sourcemap: false
+    exclude:
+      - aws-sdk
+    target: node18
+    platform: node

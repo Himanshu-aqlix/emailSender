@@ -14,7 +14,9 @@ app.use(
     crossOriginResourcePolicy: { policy: "cross-origin" },
   })
 );
-app.use(cors({ origin: process.env.CLIENT_URL }));
+app.use(cors({
+  origin: "*"
+}));
 app.use(express.json({ limit: "5mb" }));
 app.use("/uploads", express.static(path.join(__dirname, "public", "uploads")));
 app.use(morgan("dev"));

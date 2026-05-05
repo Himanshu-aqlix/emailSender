@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { login, register } from "../services/authService";
 import { BRAND_LOGO_SRC } from "../brand";
+import { API_BASE_URL } from "../config/api";
 
 export default function AuthPage() {
   const [mode, setMode] = useState("signin");
@@ -28,7 +29,7 @@ export default function AuthPage() {
       location.href = "/dashboard";
     } catch (err) {
       if (err?.code === "ERR_NETWORK") {
-        setError("Cannot connect to backend at http://localhost:5000. Start backend server first.");
+        setError(`Cannot connect to backend at ${API_BASE_URL}. Start backend server first.`);
       } else {
         setError(err?.response?.data?.message || "Authentication failed. Please try again.");
       }
