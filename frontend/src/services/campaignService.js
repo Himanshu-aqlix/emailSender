@@ -1,7 +1,15 @@
 import api from "../utils/api";
 
 /**
- * @param {{ page?: number; limit?: number; q?: string; status?: string }} [params]
+ * @param {{
+ *   page?: number;
+ *   limit?: number;
+ *   q?: string;
+ *   status?: string;
+ *   dateFrom?: string;
+ *   dateTo?: string;
+ *   sort?: string;
+ * }} [params]
  */
 export const getCampaigns = (params = {}) => {
   const searchParams = new URLSearchParams();
@@ -9,6 +17,9 @@ export const getCampaigns = (params = {}) => {
   if (params.limit != null) searchParams.set("limit", String(params.limit));
   if (params.q) searchParams.set("q", params.q);
   if (params.status) searchParams.set("status", params.status);
+  if (params.dateFrom) searchParams.set("dateFrom", params.dateFrom);
+  if (params.dateTo) searchParams.set("dateTo", params.dateTo);
+  if (params.sort) searchParams.set("sort", params.sort);
   const qs = searchParams.toString();
   return api.get(`/api/campaigns${qs ? `?${qs}` : ""}`);
 };

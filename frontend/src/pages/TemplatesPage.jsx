@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import Editor from "@monaco-editor/react";
-import { AlertTriangle, Clock3, FileText, Save, Trash2, X } from "lucide-react";
+import { AlertTriangle, Clock3, FileText, Plus, Save, Trash2, X } from "lucide-react";
 import {
   createTemplate,
   deleteTemplate,
@@ -319,7 +319,7 @@ export default function TemplatesPage() {
               title="Create new template"
               aria-label="Create new template"
             >
-              <span aria-hidden>+</span>
+              <Plus size={20} strokeWidth={2.25} aria-hidden />
             </button>
           </div>
           <div className="templates-list-body">
@@ -367,13 +367,41 @@ export default function TemplatesPage() {
 
         <div className="template-editor-card middle">
           <div className="template-meta">
-            <label className="template-meta-field">
-              <span>Template Name</span>
-              <input placeholder="Template name" value={name} onChange={(e) => setName(e.target.value)} />
+            <label className="template-meta-field" htmlFor="template-name-input">
+              <span className="template-meta-label">
+                Template Name
+                <span className="template-meta-required" title="Required">
+                  *
+                </span>
+              </span>
+              <input
+                id="template-name-input"
+                name="templateName"
+                placeholder="Template name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                aria-required="true"
+                autoComplete="off"
+              />
             </label>
-            <label className="template-meta-field">
-              <span>Subject Line</span>
-              <input placeholder="Subject line" value={subject} onChange={(e) => setSubject(e.target.value)} />
+            <label className="template-meta-field" htmlFor="template-subject-input">
+              <span className="template-meta-label">
+                Subject Line
+                <span className="template-meta-required" title="Required">
+                  *
+                </span>
+              </span>
+              <input
+                id="template-subject-input"
+                name="templateSubject"
+                placeholder="Subject line"
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                required
+                aria-required="true"
+                autoComplete="off"
+              />
             </label>
           </div>
           <div className="template-controls">
@@ -395,7 +423,7 @@ export default function TemplatesPage() {
             </div>
           </div>
           {error ? <p className="auth-error">{error}</p> : null}
-          {notice ? <p className="helper">{notice}</p> : null}
+          {/* {notice ? <p className="helper">{notice}</p> : null} */}
           {attachments.length ? (
             <div className="template-attachments">
               {attachments.map((a, idx) => (

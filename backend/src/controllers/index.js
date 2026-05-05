@@ -18,6 +18,15 @@ const { normalizeRange, buildEngagementTimeline } = require("../utils/campaignEn
 
 const sign = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
 
+/** Contacts subscribed to any of a campaign's lists (for draft audience when no sends yet). */
+async function countContactsForCampaignLists(campaign, ownerId) {
+  const rawIds =
+    Array.isArray(campaign.listIds) && campaign.listIds.length > 0 ? campaign.listIds : campaign.listId ? [campaign.listId] : [];
+  const listIds = rawIds.map((id) => id?._id ?? id).filter(Boolean);
+  if (!listIds.length) return 0;
+  return Contact.countDocuments({ owner: ownerId, lists: { $in: listIds } });
+}
+
 /** Daily sent/opened/clicked from EmailLog (same semantics as dashboard KPIs). */
 const buildEmailLogWeeklyStats = async (ownerId, startUtc, endUtc, daysCount) => {
   const ownerOid = new mongoose.Types.ObjectId(String(ownerId));
@@ -758,13 +767,31 @@ exports.getCampaigns = async (req, res) => {
     const q = String(req.query.q).trim();
     filter.name = { $regex: q, $options: "i" };
   }
+  if (req.query.dateFrom || req.query.dateTo) {
+    const range = {};
+    if (req.query.dateFrom) {
+      const d = new Date(String(req.query.dateFrom));
+      if (!Number.isNaN(d.getTime())) range.$gte = d;
+    }
+    if (req.query.dateTo) {
+      const d = new Date(String(req.query.dateTo));
+      if (!Number.isNaN(d.getTime())) range.$lte = d;
+    }
+    if (Object.keys(range).length) filter.createdAt = range;
+  }
+
+  const sortKey = String(req.query.sort || "newest").toLowerCase();
+  let sort = { createdAt: -1 };
+  if (sortKey === "oldest") sort = { createdAt: 1 };
+  else if (sortKey === "name_asc") sort = { name: 1 };
+  else if (sortKey === "name_desc") sort = { name: -1 };
 
   const [items, total] = await Promise.all([
     Campaign.find(filter)
       .populate("templateId", "name")
       .populate("listId", "name")
       .populate("listIds", "name")
-      .sort({ createdAt: -1 })
+      .sort(sort)
       .skip(skip)
       .limit(limit),
     Campaign.countDocuments(filter),
@@ -1226,9 +1253,55 @@ exports.getDashboardSummary = async (req, res) => {
     });
   });
 
+  const ownerOidSummary = new mongoose.Types.ObjectId(String(owner));
+  const campaignOidList = campaigns.map((c) => new mongoose.Types.ObjectId(String(c._id)));
+  const logAggByCampaign =
+    campaignOidList.length === 0
+      ? []
+      : await EmailLog.aggregate([
+          { $match: { owner: ownerOidSummary, campaignId: { $in: campaignOidList } } },
+          {
+            $group: {
+              _id: "$campaignId",
+              recipients: { $sum: 1 },
+              opened: { $sum: { $cond: ["$opened", 1, 0] } },
+              delivered: {
+                $sum: {
+                  $cond: [{ $in: ["$status", ["delivered", "opened", "clicked"]] }, 1, 0],
+                },
+              },
+            },
+          },
+        ]);
+  const logByCampaignId = new Map(logAggByCampaign.map((row) => [String(row._id), row]));
+
+  const enrichedCampaigns = await Promise.all(
+    campaigns.map(async (c) => {
+      const id = String(c._id);
+      const row = logByCampaignId.get(id);
+      const fromLogs = row?.recipients ?? 0;
+      const opened = row?.opened ?? 0;
+      const delivered = row?.delivered ?? 0;
+      let openRate = 0;
+      if (delivered > 0) openRate = Number(((opened / delivered) * 100).toFixed(1));
+      else if (fromLogs > 0) openRate = Number(((opened / fromLogs) * 100).toFixed(1));
+
+      let recipientCount = fromLogs;
+      if (recipientCount === 0 && String(c.status) === "draft") {
+        recipientCount = await countContactsForCampaignLists(c, owner);
+      }
+
+      return {
+        ...c,
+        recipientCount,
+        openRate,
+      };
+    })
+  );
+
   return res.json({
     ...stats,
-    campaigns,
+    campaigns: enrichedCampaigns,
     contactsCount: contacts.length,
     audienceRows: Array.from(audienceMap.values()).sort((a, b) => b.count - a.count).slice(0, 5),
   });

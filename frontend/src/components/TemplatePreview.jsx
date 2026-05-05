@@ -12,10 +12,6 @@ const VARIABLE_GROUPS = [
     keys: ["name", "email", "phone", "company"],
   },
   {
-    label: "Campaign info",
-    keys: ["campaign_name"],
-  },
-  {
     label: "System variables",
     keys: ["date"],
   },
@@ -42,10 +38,17 @@ function normalizeSampleMap(sample) {
   return m;
 }
 
+/** Keep in sync with backend `replaceVariables.js` (name fallback). */
+const NAME_FALLBACK = "Customer";
+
 function applyPreviewVariables(html, sampleMap) {
   return String(html || "").replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/gi, (_, rawKey) => {
     const key = String(rawKey).toLowerCase();
     const v = sampleMap[key];
+    if (key === "name") {
+      if (v === null || v === undefined || String(v).trim() === "") return NAME_FALLBACK;
+      return String(v).trim();
+    }
     if (v === null || v === undefined) return "";
     return String(v);
   });

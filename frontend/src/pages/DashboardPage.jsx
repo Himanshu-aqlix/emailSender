@@ -571,9 +571,16 @@ export default function DashboardPage() {
             </thead>
             <tbody>
               {campaigns.length ? campaigns.map((c) => {
-                const recipientCount = c.recipientCount ?? c.sentCount ?? c.totalSent ?? c.audienceSize ?? "—";
-                const openRateValue = c.openRate ?? c.openRatePct ?? c.metrics?.openRate ?? null;
-                const openRateText = openRateValue == null ? "—" : `${Number(openRateValue).toFixed(1)}%`;
+                const rawRecipients = c.recipientCount ?? c.sentCount ?? c.totalSent ?? c.audienceSize;
+                const recipientDisplay =
+                  rawRecipients == null || rawRecipients === ""
+                    ? "—"
+                    : typeof rawRecipients === "number"
+                      ? rawRecipients.toLocaleString()
+                      : rawRecipients;
+                const openRateValue = c.openRate ?? c.openRatePct ?? c.metrics?.openRate;
+                const openRateText =
+                  openRateValue == null || Number.isNaN(Number(openRateValue)) ? "—" : `${Number(openRateValue).toFixed(1)}%`;
                 return (
                   <tr key={c._id}>
                     <td>
@@ -585,8 +592,8 @@ export default function DashboardPage() {
                         </div>
                       </div>
                     </td>
-                    <td>{new Date(c.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</td>
-                    <td>{recipientCount}</td>
+                    <td>{c.createdAt ? new Date(c.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—"}</td>
+                    <td>{recipientDisplay}</td>
                     <td>{openRateText}</td>
                     <td>
                       <span className={`status-pill recent-status ${c.status === "completed" ? "success" : c.status === "draft" ? "draft" : c.status === "sending" ? "sending" : "failed"}`}>

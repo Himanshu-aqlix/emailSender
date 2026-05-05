@@ -394,7 +394,9 @@ export default function AppLayout() {
           <div className="app-user">
             <span className="app-bell"><Bell size={14} /></span>
             <div className="app-user-meta">
-              <strong title={email || undefined}>{displayName}</strong>
+              <strong className={profileLoading ? "ui-text-shimmer" : undefined} title={email || undefined}>
+                {displayName}
+              </strong>
               <small title={email || undefined}>{email || (profileLoading ? "…" : "—")}</small>
             </div>
             <span
@@ -415,7 +417,9 @@ export default function AppLayout() {
           </div>
         </header>
         <div className="app-page">
-          <Outlet />
+          <div className="app-outlet" key={location.pathname}>
+            <Outlet />
+          </div>
         </div>
       </main>
 

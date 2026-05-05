@@ -1,10 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BarChart3, CheckCircle2, ChevronDown, Eye, Filter, Plus, Send, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import CampaignsFilter from "../components/CampaignsFilter";
 import { createCampaign, getCampaigns, sendCampaign } from "../services/campaignService";
 import { getContacts } from "../services/contactService";
 import { getLists } from "../services/listService";
 import { getTemplates } from "../services/templateService";
+import {
+  DEFAULT_CAMPAIGN_FILTERS,
+  buildCampaignsQueryParams,
+  countActiveCampaignFilterKeys,
+  getCampaignSortLabel,
+  getDatePresetChipLabel,
+  getStatusChipLabel,
+  isDefaultCampaignFilters,
+} from "../utils/campaignFilters";
 
 const asArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -30,7 +40,9 @@ export default function CampaignsPage() {
   const [campaignLimit] = useState(10);
   const [searchInput, setSearchInput] = useState("");
   const [campaignQuery, setCampaignQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [showFilters, setShowFilters] = useState(false);
+  const [filterDraft, setFilterDraft] = useState(DEFAULT_CAMPAIGN_FILTERS);
+  const [appliedFilters, setAppliedFilters] = useState(DEFAULT_CAMPAIGN_FILTERS);
   const [lists, setLists] = useState([]);
   const [contacts, setContacts] = useState([]);
   const [form, setForm] = useState({ name: "", templateId: "", listIds: [] });
@@ -51,12 +63,13 @@ export default function CampaignsPage() {
 
   const fetchCampaignTable = async () => {
     try {
-      const res = await getCampaigns({
+      const params = buildCampaignsQueryParams({
         page: campaignPage,
         limit: campaignLimit,
-        ...(campaignQuery ? { q: campaignQuery } : {}),
-        ...(statusFilter !== "all" ? { status: statusFilter } : {}),
+        q: campaignQuery,
+        filters: appliedFilters,
       });
+      const res = await getCampaigns(params);
       const data = res.data || {};
       setCampaigns(data.items || []);
       const p = data.pagination;
@@ -85,7 +98,52 @@ export default function CampaignsPage() {
 
   useEffect(() => {
     fetchCampaignTable();
-  }, [campaignPage, campaignLimit, campaignQuery, statusFilter]);
+  }, [campaignPage, campaignLimit, campaignQuery, appliedFilters]);
+
+  const activeFilterChips = useMemo(() => {
+    const f = appliedFilters;
+    const chips = [];
+    if (f.status) {
+      chips.push({ id: "status", label: `Status: ${getStatusChipLabel(f.status)}` });
+    }
+    if (f.datePreset && f.datePreset !== "all") {
+      chips.push({ id: "date", label: getDatePresetChipLabel(f.datePreset) });
+    }
+    if (f.sort && f.sort !== "newest") {
+      chips.push({ id: "sort", label: `Sort: ${getCampaignSortLabel(f.sort)}` });
+    }
+    return chips;
+  }, [appliedFilters]);
+
+  const applyFilterDraft = () => {
+    setAppliedFilters({ ...filterDraft });
+    setCampaignPage(1);
+  };
+
+  const resetAllFilters = () => {
+    setFilterDraft(DEFAULT_CAMPAIGN_FILTERS);
+    setAppliedFilters(DEFAULT_CAMPAIGN_FILTERS);
+    setCampaignPage(1);
+  };
+
+  const removeFilterChip = (id) => {
+    const patch =
+      id === "status"
+        ? { status: null }
+        : id === "date"
+          ? { datePreset: "all", customDateFrom: "", customDateTo: "" }
+          : id === "sort"
+            ? { sort: "newest" }
+            : {};
+    setAppliedFilters((prev) => ({ ...prev, ...patch }));
+    setFilterDraft((prev) => ({ ...prev, ...patch }));
+    setCampaignPage(1);
+  };
+
+  const hasSearch = Boolean(campaignQuery.trim());
+  const showNoCampaignsYet =
+    campaignPagination.total === 0 && !hasSearch && isDefaultCampaignFilters(appliedFilters);
+  const showNoResults = campaignPagination.total === 0 && (hasSearch || !isDefaultCampaignFilters(appliedFilters));
   const openModal = () => {
     setError("");
     setStep(1);
@@ -161,25 +219,55 @@ export default function CampaignsPage() {
             onChange={(e) => setSearchInput(e.target.value)}
             aria-label="Search campaigns"
           />
-          <div className="campaigns-filter-wrap">
-            <Filter size={14} aria-hidden />
-            <label className="sr-only" htmlFor="campaign-status-filter">Status</label>
-            <select
-              id="campaign-status-filter"
-              className="campaigns-status-select"
-              value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value);
-                setCampaignPage(1);
+          <div className="toolbar-dropdown-anchor contacts-filter-anchor">
+            <button
+              type="button"
+              className={`ghost-btn contacts-filters-trigger${
+                countActiveCampaignFilterKeys(appliedFilters) > 0 ? " has-active-filters" : ""
+              }`}
+              onClick={() => {
+                setShowFilters((v) => {
+                  const next = !v;
+                  if (next) setFilterDraft({ ...appliedFilters });
+                  return next;
+                });
               }}
+              aria-expanded={showFilters}
             >
-              <option value="all">All statuses</option>
-              <option value="draft">Draft</option>
-              <option value="sending">Sending</option>
-              <option value="completed">Completed</option>
-            </select>
+              <Filter size={14} aria-hidden />
+              Filters
+              {countActiveCampaignFilterKeys(appliedFilters) > 0 ? (
+                <span className="contacts-filters-trigger-badge">
+                  {countActiveCampaignFilterKeys(appliedFilters)}
+                </span>
+              ) : null}
+            </button>
+            <CampaignsFilter
+              open={showFilters}
+              onClose={() => setShowFilters(false)}
+              draft={filterDraft}
+              onDraftChange={setFilterDraft}
+              onApply={applyFilterDraft}
+              onReset={resetAllFilters}
+            />
           </div>
         </div>
+
+        {activeFilterChips.length > 0 ? (
+          <div className="contacts-active-filters" aria-label="Active filters">
+            {activeFilterChips.map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                className="contacts-filter-chip"
+                onClick={() => removeFilterChip(chip.id)}
+              >
+                <span>{chip.label}</span>
+                <X size={14} strokeWidth={2.25} aria-hidden />
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         <table className="contacts-table">
           <thead>
@@ -236,16 +324,23 @@ export default function CampaignsPage() {
             ))}
           </tbody>
         </table>
-        {!campaigns.length ? (
-          campaignPagination.total === 0 ? (
-            <div className="analytics-empty">
-              <div className="contacts-empty-icon"><Send size={24} /></div>
-              <h3>No campaigns yet</h3>
-              <p>Create your first campaign to start sending and tracking email performance.</p>
+        {!campaigns.length && showNoCampaignsYet ? (
+          <div className="analytics-empty">
+            <div className="contacts-empty-icon">
+              <Send size={24} />
             </div>
-          ) : (
-            <div className="empty-row">No campaigns match your filters.</div>
-          )
+            <h3>No campaigns yet</h3>
+            <p>Create your first campaign to start sending and tracking email performance.</p>
+          </div>
+        ) : null}
+        {!campaigns.length && showNoResults ? (
+          <div className="analytics-empty">
+            <div className="contacts-empty-icon">
+              <Filter size={24} />
+            </div>
+            <h3>No results found</h3>
+            <p>Try adjusting your search or filters.</p>
+          </div>
         ) : null}
         {campaignPagination.total > 0 ? (
           <div className="contacts-pagination campaigns-pagination">

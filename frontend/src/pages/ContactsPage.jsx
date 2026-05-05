@@ -36,6 +36,7 @@ import { errorToast, infoToast, messageFromAxios, successToast } from "../utils/
 import ContactsFilter from "../components/ContactsFilter";
 
 const CONTACTS_MENU_MIN_WIDTH = 220;
+const CONTACT_PAGE_LIMITS = [10, 25, 50, 100];
 
 export default function ContactsPage() {
   const [contacts, setContacts] = useState([]);
@@ -44,7 +45,7 @@ export default function ContactsPage() {
   const [appliedFilters, setAppliedFilters] = useState(() => ({ ...DEFAULT_CONTACT_FILTERS }));
   const [filterDraft, setFilterDraft] = useState(() => ({ ...DEFAULT_CONTACT_FILTERS }));
   const [page, setPage] = useState(1);
-  const [limit] = useState(10);
+  const [limit, setLimit] = useState(10);
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false });
   /** Total contacts for this account (ignores search `q`). Used to distinguish “no data” vs “no search hits”. */
   const [accountContactTotal, setAccountContactTotal] = useState(0);
@@ -135,7 +136,7 @@ export default function ContactsPage() {
   };
   useEffect(() => {
     load();
-  }, [page, query, filtersSignature]);
+  }, [page, limit, query, filtersSignature]);
   useEffect(() => {
     const onRefresh = () => {
       setPage(1);
@@ -991,14 +992,47 @@ export default function ContactsPage() {
             </div>
           ) : null}
           {displayRows.length ? (
-            <div className="contacts-pagination">
-              <button className="ghost-btn" disabled={!pagination.hasPrevPage} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-                Previous
-              </button>
-              <span>Page {pagination.page} of {pagination.totalPages}</span>
-              <button className="ghost-btn" disabled={!pagination.hasNextPage} onClick={() => setPage((p) => p + 1)}>
-                Next
-              </button>
+            <div className="contacts-pagination campaign-recipients-pagination">
+              <div className="campaign-recipients-pagination-start">
+                <label className="campaign-recipients-per-page">
+                  <span className="campaign-recipients-per-page-label">Rows per page</span>
+                  <select
+                    value={limit}
+                    onChange={(e) => {
+                      setLimit(Number(e.target.value));
+                      setPage(1);
+                    }}
+                    aria-label="Contacts per page"
+                  >
+                    {CONTACT_PAGE_LIMITS.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <p className="campaign-recipients-page-meta" aria-live="polite">
+                Page {pagination.page} of {pagination.totalPages}
+              </p>
+              <div className="campaign-recipients-pagination-end">
+                <button
+                  type="button"
+                  className="campaign-recipients-page-btn"
+                  disabled={!pagination.hasPrevPage}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="campaign-recipients-page-btn"
+                  disabled={!pagination.hasNextPage}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </button>
+              </div>
             </div>
           ) : null}
         </div>

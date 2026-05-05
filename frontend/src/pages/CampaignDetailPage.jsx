@@ -782,39 +782,41 @@ export default function CampaignDetailPage() {
               </table>
               </div>
               <div className="contacts-pagination campaign-recipients-pagination">
-                <label className="campaign-recipients-per-page">
-                  <span>Rows per page</span>
-                  <select
-                    value={recipientLimit}
-                    onChange={(e) => {
-                      setRecipientLimit(Number(e.target.value));
-                      setRecipientPage(1);
-                    }}
-                    disabled={refreshing}
-                    aria-label="Recipients per page"
-                  >
-                    {RECIPIENT_PAGE_LIMITS.map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="campaign-recipients-pagination-nav">
+                <div className="campaign-recipients-pagination-start">
+                  <label className="campaign-recipients-per-page">
+                    <span className="campaign-recipients-per-page-label">Rows per page</span>
+                    <select
+                      value={recipientLimit}
+                      onChange={(e) => {
+                        setRecipientLimit(Number(e.target.value));
+                        setRecipientPage(1);
+                      }}
+                      disabled={refreshing}
+                      aria-label="Recipients per page"
+                    >
+                      {RECIPIENT_PAGE_LIMITS.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <p className="campaign-recipients-page-meta" aria-live="polite">
+                  Page {recipientsPagination.page} of {recipientsPagination.totalPages}
+                </p>
+                <div className="campaign-recipients-pagination-end">
                   <button
                     type="button"
-                    className="ghost-btn"
+                    className="campaign-recipients-page-btn"
                     disabled={!recipientsPagination.hasPrevPage || refreshing}
                     onClick={() => setRecipientPage((p) => Math.max(1, p - 1))}
                   >
                     Previous
                   </button>
-                  <span>
-                    Page {recipientsPagination.page} of {recipientsPagination.totalPages}
-                  </span>
                   <button
                     type="button"
-                    className="ghost-btn"
+                    className="campaign-recipients-page-btn"
                     disabled={!recipientsPagination.hasNextPage || refreshing}
                     onClick={() => setRecipientPage((p) => p + 1)}
                   >
