@@ -120,8 +120,14 @@ const normalizeTemplateAttachments = (raw) => {
 
 exports.register = async (req, res) => {
   try {
-    const hash = await bcrypt.hash(req.body.password, 10);
-    const user = await User.create({ email: req.body.email.toLowerCase(), password: hash });
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password are required" });
+    }
+
+    const hash = await bcrypt.hash(password, 10);
+    const user = await User.create({ email, password: hash });
     res.status(201).json({ token: sign(user._id), user: { id: user._id, email: user.email } });
   } catch (error) {
     if (error.code === 11000) {
@@ -131,8 +137,14 @@ exports.register = async (req, res) => {
   }
 };
 exports.login = async (req, res) => {
-  const user = await User.findOne({ email: req.body.email.toLowerCase() });
-  if (!user || !(await bcrypt.compare(req.body.password, user.password))) return res.status(401).json({ message: "Invalid credentials" });
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  if (!email || !password) {
+    return res.status(400).json({ message: "Email and password are required" });
+  }
+
+  const user = await User.findOne({ email });
+  if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ message: "Invalid credentials" });
   res.json({ token: sign(user._id), user: { id: user._id, email: user.email } });
 };
 

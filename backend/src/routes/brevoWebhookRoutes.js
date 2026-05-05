@@ -15,6 +15,7 @@ router.get("/webhook/test", (_req, res) => {
 
 router.post("/api/webhook/brevo", (req, res) => {
   const body = req.body;
+  console.log("🔥 BREVO EVENT:", body);
   const events = Array.isArray(body) ? body : [body];
   console.log(`[webhook] Brevo hit: received ${events.length} event(s)`);
   events.forEach((e, idx) => {
@@ -28,7 +29,7 @@ router.post("/api/webhook/brevo", (req, res) => {
     );
   });
 
-  res.status(200).json({ success: true });
+  res.status(200).send("OK");
   setImmediate(() => {
     processBrevoWebhookBody(body)
       .then(() => console.log(`[webhook] Brevo batch processed (${events.length} event(s))`))

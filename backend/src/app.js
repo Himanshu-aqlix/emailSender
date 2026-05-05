@@ -77,6 +77,10 @@ app.use(
     skip: (req) => !isAuthLoginPath(req),
   })
 );
+app.post("/", (req, res) => {
+  console.log("❗ ROOT HIT:", req.body);
+  res.status(200).send("root");
+});
 app.use(routes);
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
