@@ -103,6 +103,17 @@ const processCampaign = async (job) => {
         email: c.email,
         logId: log._id,
       });
+      if (process.env.DEBUG_TRACKING_HTML === "1") {
+        console.log("[tracking] pre-send html debug", {
+          campaignId: String(campaign._id),
+          email: c.email,
+          logId: String(log._id),
+          hasOpenPixelUrl: trackedHtml.includes("/api/track/open/"),
+          hasOpenMarker: trackedHtml.includes("data-sendrofy-track-open=\"1\""),
+          hasClickTracking: trackedHtml.includes("/api/track/click"),
+          htmlPreview: trackedHtml.slice(Math.max(0, trackedHtml.length - 800)),
+        });
+      }
       const subject = replaceVariables(template.subject, vars);
 
       try {

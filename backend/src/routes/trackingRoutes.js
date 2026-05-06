@@ -21,10 +21,17 @@ const isValidObjectId = (v) => typeof v === "string" && v.length === 24;
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim().toLowerCase());
 
 router.get("/api/track/open/:campaignId/:email", async (req, res) => {
+  const campaignId = String(req.params.campaignId || "");
+  const email = safeDecode(req.params.email).toLowerCase();
+  const logId = String(req.query.logId || "");
+  console.log("[tracking] open pixel request", {
+    campaignId,
+    email,
+    logId: logId || undefined,
+    path: req.path,
+    originalUrl: req.originalUrl,
+  });
   try {
-    const campaignId = String(req.params.campaignId || "");
-    const email = safeDecode(req.params.email).toLowerCase();
-    const logId = String(req.query.logId || "");
     let log = null;
     if (logId && logId.length === 24) {
       log = await EmailLog.findById(logId).catch(() => null);
@@ -37,10 +44,18 @@ router.get("/api/track/open/:campaignId/:email", async (req, res) => {
       if (hasOpenedCount) {
         await Campaign.updateOne({ _id: campaignId }, { $inc: { openedCount: 1 } }).catch(() => null);
       }
+      console.log("[tracking] open recorded for log", String(log._id));
+    } else {
+      console.warn("[tracking] open pixel: no EmailLog match (gif still served)", {
+        campaignId,
+        email,
+        logId: logId || undefined,
+      });
     }
   } catch (error) {
     console.error("[tracking] open failed:", error?.message || error);
   } finally {
+    res.status(200);
     res.set("Content-Type", "image/gif");
     res.send(pixelBuffer);
   }

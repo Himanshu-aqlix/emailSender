@@ -46,9 +46,7 @@ async function applyEmailLogEventUpdate(logDoc, eventType, timestamp) {
     $set.status = "clicked";
     $set.clicked = true;
     $set.clickedAt = currentClickedAt || timestamp;
-    // Click implies open even when some clients/proxies suppress/open-pixel timing.
-    $set.opened = true;
-    $set.openedAt = currentOpenedAt || timestamp;
+    // Do not set opened/openedAt here — opens must reflect pixel or webhook "opened" only (UI honesty).
   } else if (event === "opened") {
     $set.opened = true;
     $set.openedAt = currentOpenedAt || timestamp;

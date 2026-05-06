@@ -30,6 +30,7 @@ const DEFAULT_DASHBOARD = {
   totalSent: 0,
   totalDelivered: 0,
   totalOpened: 0,
+  totalUniqueOpened: 0,
   totalClicked: 0,
   totalBounced: 0,
   openRate: 0,
@@ -37,6 +38,16 @@ const DEFAULT_DASHBOARD = {
   weeklyStats: [],
   campaignStats: [],
 };
+
+const getUniqueOpenedValue = (row) =>
+  Number(
+    row?.unique_opened ??
+    row?.uniqueOpened ??
+    row?.uniqueOpenCount ??
+    row?.unique_open_count ??
+    row?.opened ??
+    0
+  ) || 0;
 
 function useCountUp(value, durationMs = 500) {
   const [display, setDisplay] = useState(value);
@@ -112,19 +123,28 @@ export default function DashboardPage() {
 
   const engagementPeriodTotals = useMemo(() => {
     let sent = 0;
-    let opened = 0;
+    let uniqueOpened = 0;
     let clicked = 0;
     chartWeekly.forEach((row) => {
       sent += Number(row.sent || 0);
-      opened += Number(row.opened || 0);
+      uniqueOpened += getUniqueOpenedValue(row);
       clicked += Number(row.clicked || 0);
     });
-    const openPct = sent > 0 ? Number(((opened / sent) * 100).toFixed(1)) : 0;
+    if (typeof window !== "undefined") {
+      console.log("[analytics][dashboard] received unique_opened weekly values", chartWeekly.map((row) => ({
+        date: row?.date,
+        unique_opened: row?.unique_opened,
+        uniqueOpened: row?.uniqueOpened,
+        uniqueOpenCount: row?.uniqueOpenCount,
+        opened: row?.opened,
+      })));
+    }
+    const openPct = sent > 0 ? Number(((uniqueOpened / sent) * 100).toFixed(1)) : 0;
     const clickPct = sent > 0 ? Number(((clicked / sent) * 100).toFixed(1)) : 0;
-    return { sent, opened, clicked, openPct, clickPct };
+    return { sent, uniqueOpened, clicked, openPct, clickPct };
   }, [chartWeekly]);
 
-  const engagementEmpty = !loading && engagementPeriodTotals.sent + engagementPeriodTotals.opened + engagementPeriodTotals.clicked === 0;
+  const engagementEmpty = !loading && engagementPeriodTotals.sent + engagementPeriodTotals.uniqueOpened + engagementPeriodTotals.clicked === 0;
 
   const engagementLabels = useMemo(
     () =>
@@ -161,8 +181,8 @@ export default function DashboardPage() {
           stack: "eng",
         },
         {
-          label: "Opened",
-          data: chartWeekly.map((d) => d.opened || 0),
+          label: "Unique Open",
+          data: chartWeekly.map((d) => getUniqueOpenedValue(d)),
           borderColor: "#34d399",
           backgroundColor: "rgba(52, 211, 153, 0.4)",
           fill: true,
@@ -269,8 +289,8 @@ export default function DashboardPage() {
           stack: "eng",
         },
         {
-          label: "Opened",
-          data: chartWeekly.map((d) => d.opened || 0),
+          label: "Unique Open",
+          data: chartWeekly.map((d) => getUniqueOpenedValue(d)),
           backgroundColor: "rgba(52, 211, 153, 0.85)",
           borderWidth: 0,
           stack: "eng",
@@ -340,7 +360,7 @@ export default function DashboardPage() {
   );
 
   const barChartOptions = useMemo(() => {
-    const peak = Math.max(...(stats.campaignStats || []).map((x) => Math.max(x.opened || 0, x.clicked || 0)), 0);
+    const peak = Math.max(...(stats.campaignStats || []).map((x) => Math.max(getUniqueOpenedValue(x), x.clicked || 0)), 0);
     const yMax = peak === 0 ? 5 : Math.ceil(peak * 1.15);
     return {
       responsive: true,
@@ -385,18 +405,18 @@ export default function DashboardPage() {
     };
   }, [stats.campaignStats]);
 
-  const openRate = Number(stats.openRate || 0);
+  const openRate = Number((stats.uniqueOpenRate ?? stats.openRate) || 0);
   const ctr = Number(stats.clickRate || 0);
   const engagementCampaigns = (stats.campaignStats || []).length
     ? stats.campaignStats
-    : campaigns.map((c) => ({ campaignName: c.name, opened: 0, clicked: 0 }));
+    : campaigns.map((c) => ({ campaignName: c.name, unique_opened: 0, clicked: 0 }));
 
   const campaignBarData = {
     labels: engagementCampaigns.map((c) => String(c.campaignName || c.name || "campaign")),
     datasets: [
       {
-        label: "Opened",
-        data: engagementCampaigns.map((c) => Number(c.opened ?? 0)),
+        label: "Unique Open",
+        data: engagementCampaigns.map((c) => getUniqueOpenedValue(c)),
         backgroundColor: "#10b981",
         borderRadius: 6,
         maxBarThickness: 18,
@@ -446,7 +466,17 @@ export default function DashboardPage() {
   };
 
   const sentDisplay = useCountUp(stats.totalSent || 0);
-  const openedDisplay = useCountUp(stats.totalOpened || 0);
+  const openedDisplay = useCountUp(Number(stats.totalUniqueOpened ?? stats.totalOpened ?? 0));
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    console.log("[analytics][dashboard] final mapped graph values", {
+      engagementRange,
+      uniqueOpenSeries: chartWeekly.map((d) => getUniqueOpenedValue(d)),
+      campaignUniqueOpenSeries: engagementCampaigns.map((c) => getUniqueOpenedValue(c)),
+      totalUniqueOpened: Number(stats.totalUniqueOpened ?? stats.totalOpened ?? 0),
+    });
+  }, [chartWeekly, engagementCampaigns, engagementRange, stats.totalUniqueOpened, stats.totalOpened]);
   const clickedDisplay = useCountUp(stats.totalClicked || 0);
   const bouncedDisplay = useCountUp(stats.totalBounced || 0);
 
@@ -468,7 +498,7 @@ export default function DashboardPage() {
           <small>↗ +12% this week.</small>
         </div>
         <div className={`kpi-card ${loading ? "kpi-skeleton" : ""}`}>
-          <p className="kpi-heading">OPENED <span className="kpi-icon green"><Eye size={14} /></span></p>
+          <p className="kpi-heading">UNIQUE OPEN <span className="kpi-icon green"><Eye size={14} /></span></p>
           <h3>{loading ? "..." : openedDisplay}</h3>
           <small>↗ {openRate.toFixed(0)}% open rate</small>
         </div>
@@ -538,7 +568,7 @@ export default function DashboardPage() {
         </div>
         <div className="panel campaign-engagement-panel">
           <h4>Campaign engagement</h4>
-          <p className="campaign-engagement-sub">Opens vs clicks per campaign</p>
+          <p className="campaign-engagement-sub">Unique opens vs clicks per campaign</p>
           <div className="chart-box campaign-engagement-chart">
             <Bar
               data={campaignBarData}
@@ -578,7 +608,13 @@ export default function DashboardPage() {
                     : typeof rawRecipients === "number"
                       ? rawRecipients.toLocaleString()
                       : rawRecipients;
-                const openRateValue = c.openRate ?? c.openRatePct ?? c.metrics?.openRate;
+                const openRateValue =
+                  c.uniqueOpenRate ??
+                  c.unique_open_rate ??
+                  c.openRate ??
+                  c.openRatePct ??
+                  c.metrics?.uniqueOpenRate ??
+                  c.metrics?.openRate;
                 const openRateText =
                   openRateValue == null || Number.isNaN(Number(openRateValue)) ? "—" : `${Number(openRateValue).toFixed(1)}%`;
                 return (

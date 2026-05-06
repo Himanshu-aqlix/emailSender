@@ -10,21 +10,26 @@ module.exports.handler = async (event, context) => {
 
   if (!serverlessHandler) {
     serverlessHandler = serverless(app, {
-      request: (req, event) => {
-        // 🔥 Lambda body → Express req.body
-        if (event.body) {
-          try {
-            req.body =
-              typeof event.body === "string"
-                ? JSON.parse(event.body)
-                : event.body;
-          } catch (err) {
-            console.error("Lambda body parse error:", err);
-          }
-        }
+      request: (req, event, lambdaContext) => {
+        req.apiGateway = { event, context: lambdaContext };
 
-        // optional: headers/query भी attach कर सकते हो
-        req.apiGateway = { event };
+        try {
+          if (event?.body) {
+            // base64 support (API Gateway sometimes sends this)
+            const bodyString = event.isBase64Encoded
+              ? Buffer.from(event.body, "base64").toString()
+              : event.body;
+
+            req.body =
+              typeof bodyString === "string"
+                ? JSON.parse(bodyString)
+                : bodyString;
+
+            console.log("✅ Parsed Lambda Body:", req.body);
+          }
+        } catch (err) {
+          console.error("❌ Lambda body parse error:", err?.stack || err);
+        }
       },
     });
   }

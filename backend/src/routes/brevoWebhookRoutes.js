@@ -13,27 +13,31 @@ router.get("/webhook/test", (_req, res) => {
   res.send("Webhook OK");
 });
 
-router.post("/api/webhook/brevo", (req, res) => {
-  const body = req.body;
-  console.log("🔥 BREVO EVENT:", body);
-  const events = Array.isArray(body) ? body : [body];
-  console.log(`[webhook] Brevo hit: received ${events.length} event(s)`);
-  events.forEach((e, idx) => {
-    const eventType = String(e?.event || e?.type || e?.eventType || "unknown").toLowerCase();
-    const email = String(e?.email || e?.recipient || "").toLowerCase();
-    const tags = Array.isArray(e?.tags) ? e.tags : typeof e?.tags === "string" ? e.tags.split(",") : [];
-    const logTag = tags.find((t) => String(t).toLowerCase().startsWith("log:"));
-    const campaignTag = tags.find((t) => String(t).toLowerCase().startsWith("campaign:"));
-    console.log(
-      `[webhook] event ${idx + 1}/${events.length} type=${eventType} email=${email || "n/a"} log=${logTag || "n/a"} campaign=${campaignTag || "n/a"}`
-    );
-  });
+router.all("/api/webhook/brevo", async (req, res) => {
+  console.log("🔥 WEBHOOK HIT");
+  console.log("METHOD:", req.method);
+  console.log("HEADERS:", req.headers);
+  console.log("RAW BODY:", req.apiGateway?.event?.body);
+  console.log("PARSED BODY:", req.body);
+  console.log("QUERY:", req.query);
 
   res.status(200).send("OK");
+
   setImmediate(() => {
-    processBrevoWebhookBody(body)
-      .then(() => console.log(`[webhook] Brevo batch processed (${events.length} event(s))`))
-      .catch((err) => console.error("❌ Brevo webhook async error:", err?.message || err));
+    try {
+      const body = req.body || JSON.parse(req.apiGateway?.event?.body || "{}");
+      console.log("✅ FINAL BODY:", body);
+      if (req.method === "POST") {
+        const events = Array.isArray(body) ? body : [body];
+        processBrevoWebhookBody(body)
+          .then(() => console.log(`[webhook] Brevo batch processed (${events.length} event(s))`))
+          .catch((err) => console.error("❌ Brevo webhook async error:", err?.stack || err));
+      } else {
+        console.log(`[webhook] Non-POST method ${req.method} received on Brevo webhook route`);
+      }
+    } catch (e) {
+      console.error("❌ BODY PARSE ERROR:", e?.stack || e);
+    }
   });
 });
 

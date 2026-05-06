@@ -47,7 +47,8 @@ const isTrackingPath = (req) =>
   req.path.startsWith("/track/") ||
   req.path.startsWith("/api/unsubscribe") ||
   req.path.startsWith("/webhook/brevo") ||
-  req.path.startsWith("/api/webhook/brevo");
+  req.path.startsWith("/api/webhook/brevo") ||
+  req.path.startsWith("/api/webhook/");
 
 const isAuthLoginPath = (req) => req.path === "/api/auth/login" || req.path === "/auth/login";
 

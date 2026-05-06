@@ -112,7 +112,7 @@ function tooltipTitleFromTimelineRow(row) {
 
 function timelineHasCounts(rows) {
   if (!rows?.length) return false;
-  return rows.some((r) => Number(r.delivered || 0) + Number(r.opened || 0) + Number(r.clicked || 0) > 0);
+  return rows.some((r) => Number(r.delivered || 0) + Number(getUniqueOpenedValue(r)) + Number(r.clicked || 0) > 0);
 }
 
 function subtitleForEngagement(rangeKey, granularity) {
@@ -122,10 +122,24 @@ function subtitleForEngagement(rangeKey, granularity) {
 }
 
 const toPct = (value, total) => (total ? ((value / total) * 100).toFixed(1) : "0.0");
+const getUniqueOpenedValue = (row) =>
+  Number(
+    row?.unique_opened ??
+    row?.unique_open ??
+    row?.uniqueOpened ??
+    row?.uniqueOpen ??
+    row?.uniqueOpenCount ??
+    row?.unique_open_count ??
+    row?.opened ??
+    0
+  ) || 0;
+
+const sumUniqueOpenedFromTimeline = (timeline = []) =>
+  (Array.isArray(timeline) ? timeline : []).reduce((sum, row) => sum + getUniqueOpenedValue(row), 0);
 
 const EVENT_PANEL_ROWS = [
   { key: "delivered", label: "Delivered", tooltip: "Email successfully delivered" },
-  { key: "opened", label: "Opened", tooltip: "Recipient opened the email" },
+  { key: "opened", label: "Unique Open", tooltip: "Unique recipients who opened the email" },
   { key: "clicked", label: "Clicked", tooltip: "Recipient clicked a link" },
   { key: "bounced", label: "Bounced", tooltip: "Email could not be delivered" },
   { key: "complaint", label: "Complaint", tooltip: "Recipient reported spam or abuse" },
@@ -234,12 +248,27 @@ export default function CampaignDetailPage() {
       });
       if (engagementRangeRef.current !== rangeAtStart) return;
       const payload = res.data || {};
+      if (typeof window !== "undefined") {
+        console.log("[analytics][campaign] raw analytics response", payload);
+      }
       const rp = payload.recipientsPagination || defaultData.recipientsPagination;
+      const timelineRows = Array.isArray(payload.timeline) ? payload.timeline : [];
+      const eventCounts = payload.eventCounts || {};
+      const stats = payload.stats || defaultData.stats;
+      const uniqueOpenFallback =
+        getUniqueOpenedValue(stats) ||
+        getUniqueOpenedValue(eventCounts) ||
+        Number(eventCounts?.opened || 0) ||
+        sumUniqueOpenedFromTimeline(timelineRows);
+      const mergedStats = {
+        ...stats,
+        unique_opened: uniqueOpenFallback,
+      };
       setData({
         campaign: payload.campaign,
-        stats: payload.stats || defaultData.stats,
-        eventCounts: payload.eventCounts || {},
-        timeline: Array.isArray(payload.timeline) ? payload.timeline : [],
+        stats: mergedStats,
+        eventCounts,
+        timeline: timelineRows,
         timelineMeta: payload.timelineMeta || defaultData.timelineMeta,
         recipients: Array.isArray(payload.recipients) ? payload.recipients : payload.contacts || [],
         recipientsPagination: rp,
@@ -270,9 +299,23 @@ export default function CampaignDetailPage() {
         });
         if (gen !== engagementFetchGen.current) return;
         const payload = res.data || {};
+        if (typeof window !== "undefined") {
+          console.log("[analytics][campaign] raw analytics response (range update)", payload);
+        }
+        const timelineRows = Array.isArray(payload.timeline) ? payload.timeline : [];
+        const eventCounts = payload.eventCounts || {};
         setData((prev) => ({
           ...prev,
-          timeline: Array.isArray(payload.timeline) ? payload.timeline : [],
+          stats: {
+            ...(payload.stats || prev.stats),
+            unique_opened:
+              getUniqueOpenedValue(payload.stats) ||
+              getUniqueOpenedValue(eventCounts) ||
+              Number(eventCounts?.opened || 0) ||
+              sumUniqueOpenedFromTimeline(timelineRows) ||
+              getUniqueOpenedValue(prev.stats),
+          },
+          timeline: timelineRows,
           timelineMeta: payload.timelineMeta || prev.timelineMeta,
         }));
       } catch {
@@ -312,7 +355,8 @@ export default function CampaignDetailPage() {
     hasRecipients && recipients.length === 0 && !loading && !refreshing;
 
   const total = Math.max(stats.sent, 0);
-  const openRate = toPct(stats.opened, total);
+  const uniqueOpened = getUniqueOpenedValue(stats) || sumUniqueOpenedFromTimeline(timeline);
+  const openRate = toPct(uniqueOpened, total);
   const clickRate = toPct(stats.clicked, total);
   const deliveredRate = toPct(stats.delivered, total);
   const bounceRate = toPct(stats.bounced, total);
@@ -328,7 +372,7 @@ export default function CampaignDetailPage() {
   const engagementLine = useMemo(() => {
     const labels = timeline.map((row) => formatEngagementAxisLabel(row));
     const delivered = timeline.map((r) => Number(r.delivered) || 0);
-    const opened = timeline.map((r) => Number(r.opened) || 0);
+    const opened = timeline.map((r) => getUniqueOpenedValue(r));
     const clicked = timeline.map((r) => Number(r.clicked) || 0);
     const mkSet = (metricKey, label) => ({
       label,
@@ -343,7 +387,7 @@ export default function CampaignDetailPage() {
     });
     return {
       labels,
-      datasets: [mkSet("delivered", "Delivered"), mkSet("opened", "Opened"), mkSet("clicked", "Clicked")],
+      datasets: [mkSet("delivered", "Delivered"), mkSet("opened", "Unique Open"), mkSet("clicked", "Clicked")],
     };
   }, [timeline]);
 
@@ -383,16 +427,48 @@ export default function CampaignDetailPage() {
   );
 
   const openClickBar = {
-    labels: ["Opened", "Clicked"],
+    labels: ["Unique Open", "Clicked"],
     datasets: [
       {
         label: "Count",
-        data: [stats.opened, stats.clicked],
+        data: [uniqueOpened, stats.clicked],
         backgroundColor: ["#10b981", "#f59e0b"],
         borderRadius: 8,
       },
     ],
   };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    console.log("[analytics][campaign] received unique_opened values", {
+      stats: {
+        unique_opened: stats?.unique_opened,
+        unique_open: stats?.unique_open,
+        uniqueOpened: stats?.uniqueOpened,
+        uniqueOpen: stats?.uniqueOpen,
+        uniqueOpenCount: stats?.uniqueOpenCount,
+        opened: stats?.opened,
+      },
+      timeline: timeline.map((row) => ({
+        bucket: row?.bucket || row?.date || row?.dateStart || null,
+        unique_opened: row?.unique_opened,
+        unique_open: row?.unique_open,
+        uniqueOpened: row?.uniqueOpened,
+        uniqueOpen: row?.uniqueOpen,
+        uniqueOpenCount: row?.uniqueOpenCount,
+        opened: row?.opened,
+      })),
+    });
+  }, [stats, timeline]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    console.log("[analytics][campaign] final mapped graph values", {
+      uniqueOpenTotal: uniqueOpened,
+      uniqueOpenSeries: timeline.map((row) => getUniqueOpenedValue(row)),
+      clickedSeries: timeline.map((row) => Number(row?.clicked || 0)),
+    });
+  }, [uniqueOpened, timeline]);
 
   const barOptions = {
     responsive: true,
@@ -510,8 +586,8 @@ export default function CampaignDetailPage() {
         </div>
         <div className="panel campaign-kpi-card campaign-kpi-hover">
           <div>
-            <small>Opened</small>
-            <strong>{stats.opened}</strong>
+            <small>Unique Open</small>
+            <strong>{uniqueOpened}</strong>
             <p>{openRate}% open rate</p>
           </div>
           <span className="campaign-kpi-icon opened">
@@ -693,7 +769,7 @@ export default function CampaignDetailPage() {
           </div>
           <div className="campaign-rate-row">
             <div>
-              <small>Open Rate</small>
+            <small>Unique Open Rate</small>
               <strong>{openRate}%</strong>
             </div>
             <div>

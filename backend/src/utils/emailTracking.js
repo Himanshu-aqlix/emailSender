@@ -6,7 +6,7 @@ const resolveBaseUrl = () => {
 
 const baseUrl = resolveBaseUrl();
 
-const OPEN_MARKER = "data-track-open=\"1\"";
+const OPEN_MARKER = "data-sendrofy-track-open=\"1\"";
 const CLICK_MARKER = "data-track-click=\"1\"";
 const UNSUB_MARKER = "data-track-unsubscribe=\"1\"";
 
@@ -70,8 +70,10 @@ const injectTracking = ({ html, campaignId, email, logId }) => {
       });
     }
 
+    const openPixelUrl = `${baseUrl}/api/track/open/${cid}/${em}${lid ? `?logId=${lid}` : ""}`;
     if (!tracked.includes(OPEN_MARKER)) {
       const logPart = lid ? `?logId=${lid}` : "";
+      /* Avoid display:none: many mail clients defer or skip fetching hidden tracking images */
       const pixel =
         `<img src="${baseUrl}/api/track/open/${cid}/${em}${logPart}" width="1" height="1" alt="" style="display:none;" ${OPEN_MARKER} />`;
       tracked = `${tracked}${pixel}`;
@@ -83,6 +85,18 @@ const injectTracking = ({ html, campaignId, email, logId }) => {
         `If you no longer want these emails, <a href="${baseUrl}/api/unsubscribe?email=${em}" ${UNSUB_MARKER}>unsubscribe</a>.` +
         `</p>`;
       tracked = `${tracked}${unsub}`;
+    }
+
+    if (process.env.DEBUG_TRACKING_HTML === "1") {
+      console.log("[tracking] injectTracking debug", {
+        baseUrl,
+        publicBaseUrl: process.env.PUBLIC_BASE_URL || null,
+        apiBaseUrl: process.env.API_BASE_URL || null,
+        serverPublicUrl: process.env.SERVER_PUBLIC_URL || null,
+        hasOpenMarker: tracked.includes(OPEN_MARKER),
+        hasOpenPixelUrl: tracked.includes("/api/track/open/"),
+        openPixelUrl,
+      });
     }
 
     return tracked;
