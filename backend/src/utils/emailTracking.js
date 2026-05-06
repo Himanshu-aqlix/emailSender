@@ -45,6 +45,23 @@ const linkifyPlainUrls = (html = "") => {
     .join("");
 };
 
+const countMatches = (text, regex) => {
+  const source = String(text || "");
+  const flags = regex.flags.includes("g") ? regex.flags : `${regex.flags}g`;
+  const re = new RegExp(regex.source, flags);
+  const matches = source.match(re);
+  return Array.isArray(matches) ? matches.length : 0;
+};
+
+const normalizeHrefValue = (href = "") => String(href || "").trim();
+
+const isSkippableHref = (href = "") => {
+  const url = normalizeHrefValue(href).toLowerCase();
+  if (!url) return true;
+  if (url.startsWith("mailto:") || url.startsWith("tel:")) return true;
+  return url.includes("/api/track/click");
+};
+
 const injectTracking = ({ html, campaignId, email, logId }) => {
   try {
     const safeHtml = String(html || "");
@@ -55,20 +72,31 @@ const injectTracking = ({ html, campaignId, email, logId }) => {
     if (!safeHtml || !cid || !em) return safeHtml;
 
     let tracked = linkifyPlainUrls(safeHtml);
+    const hasClickMarkerBefore = tracked.includes(CLICK_MARKER);
+    const anchorTagRegex = /<a\b[^>]*>/gi;
+    const hrefAttrRegex = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/i;
+    const anchorCountBefore = countMatches(tracked, /<a\b[^>]*\bhref=(["']).*?\1[^>]*>/gi);
+    let linksTransformed = 0;
+    const transformedClickUrls = [];
 
-    if (!tracked.includes(CLICK_MARKER)) {
-      const anchorRegex = /<a\b([^>]*?)\bhref=(["'])(.*?)\2([^>]*)>/gi;
-      tracked = tracked.replace(anchorRegex, (full, preAttrs, quote, href, postAttrs) => {
-        const url = String(href || "").trim();
-        if (!url) return full;
-        if (url.startsWith("mailto:") || url.startsWith("tel:")) return full;
-        if (url.includes("/api/track/click")) return full;
+    tracked = tracked.replace(anchorTagRegex, (tag) => {
+      const hrefMatch = tag.match(hrefAttrRegex);
+      if (!hrefMatch) return tag;
+      const rawHref = hrefMatch[1] ?? hrefMatch[2] ?? hrefMatch[3] ?? "";
+      const url = normalizeHrefValue(rawHref);
+      if (isSkippableHref(url)) return tag;
 
-        const logPart = lid ? `&logId=${lid}` : "";
-        const trackedUrl = `${baseUrl}/api/track/click?campaignId=${cid}&email=${em}${logPart}&redirect=${encodeURIComponent(url)}`;
-        return `<a${preAttrs}href="${trackedUrl}" ${CLICK_MARKER}${postAttrs}>`;
-      });
-    }
+      const logPart = lid ? `&logId=${lid}` : "";
+      const trackedUrl = `${baseUrl}/api/track/click?campaignId=${cid}&email=${em}${logPart}&redirect=${encodeURIComponent(url)}`;
+      linksTransformed += 1;
+      if (transformedClickUrls.length < 10) transformedClickUrls.push(trackedUrl);
+
+      let nextTag = tag.replace(hrefAttrRegex, `href="${trackedUrl}"`);
+      if (!nextTag.includes(CLICK_MARKER)) {
+        nextTag = nextTag.replace(/>$/, ` ${CLICK_MARKER}>`);
+      }
+      return nextTag;
+    });
 
     const openPixelUrl = `${baseUrl}/api/track/open/${cid}/${em}${lid ? `?logId=${lid}` : ""}`;
     if (!tracked.includes(OPEN_MARKER)) {
@@ -93,6 +121,12 @@ const injectTracking = ({ html, campaignId, email, logId }) => {
         publicBaseUrl: process.env.PUBLIC_BASE_URL || null,
         apiBaseUrl: process.env.API_BASE_URL || null,
         serverPublicUrl: process.env.SERVER_PUBLIC_URL || null,
+        hasClickMarkerBefore,
+        anchorCountBefore,
+        linksTransformed,
+        transformedClickUrls,
+        finalHasClickTrackingUrl: tracked.includes("/api/track/click"),
+        finalClickTrackingUrlCount: countMatches(tracked, /\/api\/track\/click\?/gi),
         hasOpenMarker: tracked.includes(OPEN_MARKER),
         hasOpenPixelUrl: tracked.includes("/api/track/open/"),
         openPixelUrl,

@@ -153,10 +153,19 @@ async function processBrevoWebhookBody(body) {
 
 /** Pixel / tracked-link engagement (creates EventLog + applies same status rules). */
 async function recordTrackingEngagement(logId, eventType) {
+  const evt = String(eventType || "").toLowerCase();
+  if (evt === "clicked") {
+    console.log("[tracking][diag][clicked] recordTrackingEngagement entry", { logId: String(logId || "") });
+  }
   if (!logId || !mongoose.Types.ObjectId.isValid(String(logId))) return;
   const timestamp = new Date();
   const logDoc = await EmailLog.findById(logId);
-  if (!logDoc) return;
+  if (!logDoc) {
+    if (evt === "clicked") {
+      console.log("[tracking][diag][clicked] logDoc not found for logId", String(logId || ""));
+    }
+    return;
+  }
   await EventLog.create({
     owner: logDoc.owner,
     campaignId: logDoc.campaignId,
@@ -165,8 +174,20 @@ async function recordTrackingEngagement(logId, eventType) {
     timestamp,
     metadata: { source: "tracking" },
   });
+  if (evt === "clicked") {
+    console.log("[tracking][diag][clicked] EventLog created", {
+      campaignId: String(logDoc.campaignId || ""),
+      email: String(logDoc.email || "").toLowerCase(),
+    });
+  }
   const fresh = await EmailLog.findById(logId);
   if (fresh) await applyEmailLogEventUpdate(fresh, eventType, timestamp);
+  if (evt === "clicked") {
+    console.log("[tracking][diag][clicked] applyEmailLogEventUpdate executed", {
+      freshFound: !!fresh,
+      statusAfter: fresh?.status || null,
+    });
+  }
 }
 
 module.exports = {
