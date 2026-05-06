@@ -35,7 +35,10 @@ app.use((req, _res, next) => {
   next();
 });
 
-app.use("/uploads", express.static(path.join(__dirname, "public", "uploads")));
+const uploadsStaticDir = process.env.AWS_LAMBDA_FUNCTION_NAME
+  ? path.join("/tmp", "uploads")
+  : path.join(__dirname, "public", "uploads");
+app.use("/uploads", express.static(uploadsStaticDir));
 app.use(morgan("dev"));
 app.use((req, _res, next) => {
   console.log("?? REQUEST:", req.method, req.url);

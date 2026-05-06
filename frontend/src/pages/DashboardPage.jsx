@@ -466,7 +466,14 @@ export default function DashboardPage() {
   };
 
   const sentDisplay = useCountUp(stats.totalSent || 0);
-  const openedDisplay = useCountUp(Number(stats.totalUniqueOpened ?? stats.totalOpened ?? 0));
+  const resolvedTotalUniqueOpened = useMemo(() => {
+    const fromTotals = Number(stats.totalUniqueOpened ?? stats.totalOpened ?? 0);
+    if (fromTotals > 0) return fromTotals;
+    if (engagementPeriodTotals.uniqueOpened > 0) return Number(engagementPeriodTotals.uniqueOpened);
+    const fromCampaignStats = (stats.campaignStats || []).reduce((sum, row) => sum + getUniqueOpenedValue(row), 0);
+    return Number(fromCampaignStats || 0);
+  }, [engagementPeriodTotals.uniqueOpened, stats.totalUniqueOpened, stats.totalOpened, stats.campaignStats]);
+  const openedDisplay = useCountUp(resolvedTotalUniqueOpened);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -475,8 +482,9 @@ export default function DashboardPage() {
       uniqueOpenSeries: chartWeekly.map((d) => getUniqueOpenedValue(d)),
       campaignUniqueOpenSeries: engagementCampaigns.map((c) => getUniqueOpenedValue(c)),
       totalUniqueOpened: Number(stats.totalUniqueOpened ?? stats.totalOpened ?? 0),
+      resolvedTotalUniqueOpened,
     });
-  }, [chartWeekly, engagementCampaigns, engagementRange, stats.totalUniqueOpened, stats.totalOpened]);
+  }, [chartWeekly, engagementCampaigns, engagementRange, stats.totalUniqueOpened, stats.totalOpened, resolvedTotalUniqueOpened]);
   const clickedDisplay = useCountUp(stats.totalClicked || 0);
   const bouncedDisplay = useCountUp(stats.totalBounced || 0);
 

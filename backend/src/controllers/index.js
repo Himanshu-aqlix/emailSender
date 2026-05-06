@@ -17,6 +17,9 @@ const { enqueueCampaign } = require("../queues/emailQueue");
 const { normalizeRange, buildEngagementTimeline } = require("../utils/campaignEngagementTimeline");
 
 const sign = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+const uploadsRootDir = process.env.AWS_LAMBDA_FUNCTION_NAME
+  ? path.join("/tmp", "uploads")
+  : path.join(__dirname, "..", "public", "uploads");
 
 /** Contacts subscribed to any of a campaign's lists (for draft audience when no sends yet). */
 async function countContactsForCampaignLists(campaign, ownerId) {
@@ -206,7 +209,7 @@ exports.uploadTemplateImage = async (req, res) => {
   const mime = String(req.file.mimetype || "").toLowerCase();
   if (!mime.startsWith("image/")) return res.status(400).json({ message: "Only image files are allowed" });
 
-  const uploadsDir = path.join(__dirname, "..", "public", "uploads");
+  const uploadsDir = uploadsRootDir;
   await fs.mkdir(uploadsDir, { recursive: true });
 
   const ext = (mime.split("/")[1] || "png").replace(/[^a-z0-9]/gi, "").toLowerCase() || "png";
@@ -225,7 +228,7 @@ exports.uploadTemplateAttachment = async (req, res) => {
     return res.status(400).json({ message: "Attachment exceeds 10MB limit" });
   }
 
-  const attachmentsDir = path.join(__dirname, "..", "public", "uploads", "attachments");
+  const attachmentsDir = path.join(uploadsRootDir, "attachments");
   await fs.mkdir(attachmentsDir, { recursive: true });
 
   const originalName = String(req.file.originalname || "attachment").trim() || "attachment";
@@ -880,6 +883,19 @@ exports.getCampaignDetails = async (req, res) => {
     sent: eventCountsRaw.sent || 0,
   };
 
+  if (process.env.DEBUG_ANALYTICS === "1") {
+    console.log("[analytics][campaign-details] build marker", "campaign-details-v2");
+    console.log("[analytics][campaign-details] eventCountsRaw", eventCountsRaw);
+    console.log("[analytics][campaign-details] eventCountsDerived", eventCounts);
+    console.log("[analytics][campaign-details] eventType buckets", {
+      opened: eventCountsRaw.opened || 0,
+      unique_opened: eventCountsRaw.unique_opened || 0,
+      unique_open: eventCountsRaw.unique_open || 0,
+      clicked: eventCountsRaw.clicked || 0,
+      delivered: eventCountsRaw.delivered || 0,
+    });
+  }
+
   const timelineRangeKey = normalizeRange(req.query.range);
   const timelineBuild = await buildEngagementTimeline(EventLog, campaignOid, timelineRangeKey);
   /** @deprecated Use timeline rows + timelineMeta; kept for older clients expecting `date` on 7d daily rows */
@@ -940,6 +956,21 @@ exports.getCampaignDetails = async (req, res) => {
     },
   ]).exec();
 
+  const [emailLogEventFieldAgg] = await EmailLog.aggregate([
+    { $match: logMatch },
+    {
+      $group: {
+        _id: null,
+        openedFlag: { $sum: { $cond: ["$opened", 1, 0] } },
+        clickedFlag: { $sum: { $cond: ["$clicked", 1, 0] } },
+        eventsOpened: { $sum: { $ifNull: ["$events.opened", 0] } },
+        eventsUniqueOpened: { $sum: { $ifNull: ["$events.unique_opened", 0] } },
+        eventsUniqueOpen: { $sum: { $ifNull: ["$events.unique_open", 0] } },
+        eventsClicked: { $sum: { $ifNull: ["$events.clicked", 0] } },
+      },
+    },
+  ]).exec();
+
   const logCount = await EmailLog.countDocuments(logMatch);
 
   const stats = statsRow
@@ -952,6 +983,17 @@ exports.getCampaignDetails = async (req, res) => {
         failed: statsRow.failed,
       }
     : { sent: logCount, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
+
+  if (process.env.DEBUG_ANALYTICS === "1") {
+    console.log("[analytics][campaign-details] emailLog statsRow", statsRow || null);
+    console.log("[analytics][campaign-details] emailLog event-field agg", emailLogEventFieldAgg || null);
+    console.log("[analytics][campaign-details] final stats returned", stats);
+    console.log("[analytics][campaign-details] timeline sample", {
+      points: timeline.length,
+      first: timeline[0] || null,
+      last: timeline[timeline.length - 1] || null,
+    });
+  }
 
   const recipientTotal = logCount;
   const recipientLimit = Math.min(Math.max(parseInt(req.query.recipientsLimit || "25", 10), 1), 100);
@@ -990,7 +1032,7 @@ exports.getCampaignDetails = async (req, res) => {
     hasPrevPage: recipientPage > 1,
   };
 
-  return res.json({
+  const responsePayload = {
     campaign,
     stats,
     eventCounts,
@@ -1000,7 +1042,18 @@ exports.getCampaignDetails = async (req, res) => {
     recipients,
     contacts: recipients,
     recipientsPagination,
-  });
+  };
+  if (process.env.DEBUG_ANALYTICS === "1") {
+    console.log("[analytics][campaign-details] response payload snapshot", {
+      campaignId: String(campaign._id),
+      stats: responsePayload.stats,
+      eventCounts: responsePayload.eventCounts,
+      eventCountsRaw: responsePayload.eventCountsRaw,
+      timelinePoints: responsePayload.timeline?.length || 0,
+      recipientsCount: responsePayload.recipients?.length || 0,
+    });
+  }
+  return res.json(responsePayload);
 };
 
 exports.getCampaignRecipientTimeline = async (req, res) => {
