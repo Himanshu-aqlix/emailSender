@@ -64,6 +64,7 @@ export default function ListDetailPage() {
 
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const importModalOpenRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -142,6 +143,7 @@ export default function ListDetailPage() {
   }, [showAddModal]);
 
   useEffect(() => {
+    importModalOpenRef.current = showImportModal;
     if (showImportModal) {
       setImportFile(null);
       setImportError("");
@@ -275,6 +277,11 @@ export default function ListDetailPage() {
 
   const pickImportFile = () => importFileInputRef.current?.click();
 
+  const closeImportModal = () => {
+    importModalOpenRef.current = false;
+    setShowImportModal(false);
+  };
+
   const onImportConfirm = async () => {
     if (!importFile || !id) return;
     setImportError("");
@@ -295,7 +302,12 @@ export default function ListDetailPage() {
         skippedDuplicateEmails: Array.isArray(data?.skippedDuplicateEmails) ? data.skippedDuplicateEmails : [],
       });
     } catch (e) {
-      setImportError(e?.response?.data?.message || "Import failed");
+      const message = e?.response?.data?.message || "Import failed";
+      if (importModalOpenRef.current) {
+        setImportError(message);
+      } else {
+        errorToast(message);
+      }
     } finally {
       setImportSubmitting(false);
     }
@@ -822,7 +834,7 @@ export default function ListDetailPage() {
       {showImportModal ? (
         <div
           className="modal-overlay import-modal-overlay"
-          onClick={() => !importSubmitting && setShowImportModal(false)}
+          onClick={closeImportModal}
         >
           <div
             className="contact-modal small import-modal"
@@ -843,9 +855,8 @@ export default function ListDetailPage() {
               <button
                 type="button"
                 className="modal-close import-modal-close"
-                onClick={() => !importSubmitting && setShowImportModal(false)}
+                onClick={closeImportModal}
                 aria-label="Close"
-                disabled={importSubmitting}
               >
                 <X size={18} />
               </button>
@@ -880,15 +891,19 @@ export default function ListDetailPage() {
                   {importError}
                 </p>
               ) : null}
+              {importSubmitting ? (
+                <p className="import-modal-hint" role="status">
+                  Import is running in the background. You can close this window.
+                </p>
+              ) : null}
             </div>
             <div className="import-modal-footer">
               <button
                 type="button"
                 className="import-modal-btn-secondary"
-                onClick={() => setShowImportModal(false)}
-                disabled={importSubmitting}
+                onClick={closeImportModal}
               >
-                Cancel
+                {importSubmitting ? "Close" : "Cancel"}
               </button>
               <button
                 type="button"

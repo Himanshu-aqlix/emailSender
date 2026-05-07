@@ -120,6 +120,7 @@ export default function ContactsPage() {
   const [showSampleTemplateModal, setShowSampleTemplateModal] = useState(false);
   const importWrapToolbarRef = useRef(null);
   const importWrapEmptyRef = useRef(null);
+  const importModalOpenRef = useRef(false);
 
   const filtersSignature = useMemo(
     () =>
@@ -245,6 +246,7 @@ export default function ContactsPage() {
   };
 
   useEffect(() => {
+    importModalOpenRef.current = showImportModal;
     if (!showImportModal) return undefined;
     clearImportSuggestBlurTimer();
     setImportModalError("");
@@ -545,6 +547,14 @@ export default function ContactsPage() {
     importFileInputRef.current?.click();
   };
 
+  const closeImportModal = () => {
+    importModalOpenRef.current = false;
+    setShowImportModal(false);
+    setImportSuggestOpen(false);
+    setImportSuggestHighlight(-1);
+    clearImportSuggestBlurTimer();
+  };
+
   const handleImportConfirm = async () => {
     if (!importSelectedFile || importSubmitting) return;
 
@@ -580,13 +590,19 @@ export default function ContactsPage() {
       await load();
       window.dispatchEvent(new Event("lists:refresh"));
       window.dispatchEvent(new Event("contacts:refresh"));
+      setImportSelectedFile(null);
       setImportResult({
         inserted: Number(data?.inserted || data?.imported || 0),
         skippedDuplicates: Number(data?.skippedDuplicates || 0),
         skippedDuplicateEmails: Array.isArray(data?.skippedDuplicateEmails) ? data.skippedDuplicateEmails : [],
       });
     } catch (e) {
-      setImportModalError(e?.response?.data?.message || e?.message || "Import failed.");
+      const message = e?.response?.data?.message || e?.message || "Import failed.";
+      if (importModalOpenRef.current) {
+        setImportModalError(message);
+      } else {
+        errorToast(message);
+      }
     } finally {
       setImportSubmitting(false);
     }
@@ -1766,7 +1782,7 @@ export default function ContactsPage() {
       ) : null}
 
       {showImportModal ? (
-        <div className="modal-overlay import-modal-overlay" onClick={() => !importSubmitting && setShowImportModal(false)}>
+        <div className="modal-overlay import-modal-overlay" onClick={closeImportModal}>
           <div
             className="contact-modal import-modal contacts-import-modal-pro"
             role="dialog"
@@ -1793,9 +1809,8 @@ export default function ContactsPage() {
               <button
                 type="button"
                 className="modal-close import-modal-close"
-                onClick={() => !importSubmitting && setShowImportModal(false)}
+                onClick={closeImportModal}
                 aria-label="Close"
-                disabled={importSubmitting}
               >
                 <X size={18} />
               </button>
@@ -1907,15 +1922,19 @@ export default function ContactsPage() {
                   <p className="import-modal-hint">Accepted: .xlsx, .xls. File is processed only after you confirm.</p>
                 )}
               </div>
+              {importSubmitting ? (
+                <p className="import-modal-hint" role="status">
+                  Import is running in the background. You can close this window.
+                </p>
+              ) : null}
             </div>
             <div className="import-modal-footer contacts-import-modal-footer">
               <button
                 type="button"
                 className="import-modal-btn-secondary"
-                onClick={() => setShowImportModal(false)}
-                disabled={importSubmitting}
+                onClick={closeImportModal}
               >
-                Cancel
+                {importSubmitting ? "Close" : "Cancel"}
               </button>
               <button
                 type="button"
