@@ -39,7 +39,7 @@ export default function ListDetailPage() {
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
-  const [addForm, setAddForm] = useState({ name: "", email: "", phone: "" });
+  const [addForm, setAddForm] = useState({ name: "", email: "", companyName: "", phone: "" });
   const [addError, setAddError] = useState("");
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [importFile, setImportFile] = useState(null);
@@ -52,7 +52,7 @@ export default function ListDetailPage() {
   const [contactMenuCoords, setContactMenuCoords] = useState(null);
   const contactMenuTriggerRef = useRef(null);
   const [editTarget, setEditTarget] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", email: "", phone: "" });
+  const [editForm, setEditForm] = useState({ name: "", email: "", companyName: "", phone: "" });
   const [editError, setEditError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
 
@@ -150,6 +150,7 @@ export default function ListDetailPage() {
       setEditForm({
         name: editTarget.name || "",
         email: editTarget.email || "",
+        companyName: editTarget.companyName || "",
         phone: editTarget.phone || "",
       });
       setEditError("");
@@ -196,6 +197,7 @@ export default function ListDetailPage() {
       await updateContact(editTarget._id, {
         name: nameTrim,
         email: emailTrim,
+        companyName: editForm.companyName.trim(),
         phone: phoneTrim,
       });
       setEditTarget(null);
@@ -251,16 +253,18 @@ export default function ListDetailPage() {
       setAddError("Email and phone are required.");
       return;
     }
+    const companyTrim = addForm.companyName.trim();
     setAddSubmitting(true);
     try {
       await createContact({
         name: addForm.name.trim(),
+        companyName: companyTrim,
         email: emailTrim,
         phone: phoneTrim,
         listId: id,
       });
       setShowAddModal(false);
-      setAddForm({ name: "", email: "", phone: "" });
+      setAddForm({ name: "", email: "", companyName: "", phone: "" });
       await load();
       window.dispatchEvent(new Event("contacts:refresh"));
       window.dispatchEvent(new Event("lists:refresh"));
@@ -383,6 +387,7 @@ export default function ListDetailPage() {
               <tr>
                 <th>NAME</th>
                 <th>EMAIL</th>
+                <th>COMPANY</th>
                 <th>PHONE</th>
                 <th>LIST</th>
                 <th>ADDED</th>
@@ -404,6 +409,9 @@ export default function ListDetailPage() {
                       </div>
                     </td>
                     <td><span className="list-cell-icon"><Mail size={13} /> {c.email}</span></td>
+                    <td className="company-cell">
+                      <span title={c.companyName || ""}>{c.companyName || "—"}</span>
+                    </td>
                     <td><span className="list-cell-icon"><Phone size={13} /> {c.phone || "—"}</span></td>
                     <td>
                       <span className="list-pill">{listName}</span>
@@ -575,6 +583,19 @@ export default function ListDetailPage() {
                 />
               </div>
               <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="edit-contact-company">
+                  Company Name <span className="import-modal-optional">optional</span>
+                </label>
+                <input
+                  id="edit-contact-company"
+                  className="import-modal-input"
+                  value={editForm.companyName}
+                  onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })}
+                  disabled={editSaving}
+                  autoComplete="organization"
+                />
+              </div>
+              <div className="import-modal-field">
                 <label className="import-modal-label" htmlFor="edit-contact-phone">
                   Phone <span className="import-modal-required" aria-hidden="true">*</span>
                 </label>
@@ -724,6 +745,20 @@ export default function ListDetailPage() {
                   onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
                   disabled={addSubmitting}
                   autoComplete="email"
+                />
+              </div>
+              <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="list-add-company">
+                  Company Name <span className="import-modal-optional">optional</span>
+                </label>
+                <input
+                  id="list-add-company"
+                  className="import-modal-input"
+                  value={addForm.companyName}
+                  onChange={(e) => setAddForm({ ...addForm, companyName: e.target.value })}
+                  placeholder="Acme Corp"
+                  disabled={addSubmitting}
+                  autoComplete="organization"
                 />
               </div>
               <div className="import-modal-field">

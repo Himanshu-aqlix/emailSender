@@ -91,7 +91,14 @@ const processCampaign = async (job) => {
         name: c.name ?? fld.name ?? "",
         email: c.email ?? "",
         phone: c.phone ?? fld.phone ?? "",
-        company: fld.company != null ? String(fld.company) : "",
+        company:
+          c.companyName != null && String(c.companyName).trim() !== ""
+            ? String(c.companyName)
+            : fld.company != null
+              ? String(fld.company)
+              : fld.companyName != null
+                ? String(fld.companyName)
+                : "",
         date: new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }),
         campaign_name: campaign.name || "",
       };

@@ -96,6 +96,8 @@ export default function ContactsFilter({
               >
                 <option value="name_asc">Name (A → Z)</option>
                 <option value="name_desc">Name (Z → A)</option>
+                <option value="company_asc">Company (A → Z)</option>
+                <option value="company_desc">Company (Z → A)</option>
                 <option value="newest">Recently added</option>
                 <option value="oldest">Oldest first</option>
               </select>

@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import {
   AlertTriangle,
   ArrowUpFromLine,
-  BarChart3,
   ChevronDown,
   Download,
   FileSpreadsheet,
@@ -20,11 +19,11 @@ import {
   createContact,
   deleteContact,
   getContacts,
-  postSampleContacts,
   updateContact,
   uploadContactsFile,
 } from "../services/contactService";
 import { createList, getLists } from "../services/listService";
+import { downloadContactSampleFile } from "../utils/downloadContactSampleFile";
 import { formatCreatedDateTime } from "../utils/formatDateTime";
 import {
   buildContactsQueryParams,
@@ -32,7 +31,7 @@ import {
   DEFAULT_CONTACT_FILTERS,
   getSortLabel,
 } from "../utils/contactsFilters";
-import { errorToast, infoToast, messageFromAxios, successToast } from "../utils/toast";
+import { errorToast, messageFromAxios, successToast } from "../utils/toast";
 import ContactsFilter from "../components/ContactsFilter";
 
 const CONTACTS_MENU_MIN_WIDTH = 220;
@@ -61,10 +60,10 @@ export default function ContactsPage() {
   const contactsMenuTriggerRef = useRef(null);
 
   const [editTarget, setEditTarget] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", email: "", phone: "" });
+  const [editForm, setEditForm] = useState({ name: "", email: "", companyName: "", phone: "" });
   const [editError, setEditError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
-  const [addForm, setAddForm] = useState({ name: "", email: "", phone: "", listId: "", listName: "", creatingNewList: false });
+  const [addForm, setAddForm] = useState({ name: "", email: "", companyName: "", phone: "", listId: "", listName: "", creatingNewList: false });
   const [importListInput, setImportListInput] = useState("");
   const [importListPicked, setImportListPicked] = useState(null);
   const [importSuggestOpen, setImportSuggestOpen] = useState(false);
@@ -88,8 +87,7 @@ export default function ContactsPage() {
   const [bulkNotice, setBulkNotice] = useState("");
   const [bulkToast, setBulkToast] = useState("");
   const [importMenuOpen, setImportMenuOpen] = useState(false);
-  const [showSampleConfirm, setShowSampleConfirm] = useState(false);
-  const [sampleSubmitting, setSampleSubmitting] = useState(false);
+  const [showSampleTemplateModal, setShowSampleTemplateModal] = useState(false);
   const importWrapToolbarRef = useRef(null);
   const importWrapEmptyRef = useRef(null);
 
@@ -347,6 +345,7 @@ export default function ContactsPage() {
       setEditForm({
         name: editTarget.name || "",
         email: editTarget.email || "",
+        companyName: editTarget.companyName || "",
         phone: editTarget.phone || "",
       });
       setEditError("");
@@ -380,29 +379,12 @@ export default function ContactsPage() {
 
   const openSampleConfirmFromMenu = () => {
     setImportMenuOpen(false);
-    setShowSampleConfirm(true);
+    setShowSampleTemplateModal(true);
   };
 
-  const confirmLoadSampleData = async () => {
-    if (sampleSubmitting) return;
-    setSampleSubmitting(true);
-    try {
-      const res = await postSampleContacts();
-      const payload = res.data || {};
-      setShowSampleConfirm(false);
-      if (payload.alreadyExists) {
-        infoToast(payload.message || "Sample data already added");
-      } else {
-        successToast(payload.message || "Sample data added successfully");
-      }
-      await load();
-      window.dispatchEvent(new Event("lists:refresh"));
-      window.dispatchEvent(new Event("contacts:refresh"));
-    } catch (e) {
-      errorToast(messageFromAxios(e, "Could not load sample data."));
-    } finally {
-      setSampleSubmitting(false);
-    }
+  const handleDownloadSampleFile = () => {
+    downloadContactSampleFile();
+    setShowSampleTemplateModal(false);
   };
 
   const pickImportFile = () => {
@@ -523,6 +505,7 @@ export default function ContactsPage() {
     try {
       const payload = {
         name: addForm.name.trim(),
+        companyName: addForm.companyName.trim(),
         email: emailTrim,
         phone: addForm.phone.trim(),
       };
@@ -532,7 +515,7 @@ export default function ContactsPage() {
       }
       await createContact(payload);
       setShowAddModal(false);
-      setAddForm({ name: "", email: "", phone: "", listId: "", listName: "", creatingNewList: false });
+      setAddForm({ name: "", email: "", companyName: "", phone: "", listId: "", listName: "", creatingNewList: false });
       setPage(1);
       await load();
       window.dispatchEvent(new Event("lists:refresh"));
@@ -586,6 +569,7 @@ export default function ContactsPage() {
       await updateContact(editTarget._id, {
         name: nameTrim,
         email: emailTrim,
+        companyName: editForm.companyName.trim(),
         phone: phoneTrim,
       });
       setEditTarget(null);
@@ -679,10 +663,11 @@ export default function ContactsPage() {
   };
 
   const exportCsv = () => {
-    const header = ["name", "email", "phone", "list", "added"];
+    const header = ["name", "email", "companyName", "phone", "list", "added"];
     const rows = displayRows.map((c) => [
       c.name || "",
       c.email || "",
+      c.companyName || "",
       c.phone || "",
       listNamesForCsv(c),
       formatCreatedDateTime(c.createdAt),
@@ -727,9 +712,9 @@ export default function ContactsPage() {
                 </button>
                 <button type="button" className="contacts-import-dropdown-item" role="menuitem" onClick={openSampleConfirmFromMenu}>
                   <span aria-hidden className="contacts-import-dropdown-emoji">
-                    <BarChart3 size={15} strokeWidth={2} />
+                    <FileSpreadsheet size={15} strokeWidth={2} />
                   </span>
-                  Use Sample Data
+                  Download Sample File
                 </button>
               </div>
             ) : null}
@@ -810,7 +795,7 @@ export default function ContactsPage() {
           <div className="contacts-toolbar">
             <input
               className="contacts-search"
-              placeholder="Search by name, email, or phone"
+              placeholder="Search by name, company, email, or phone"
               value={query}
               onChange={(e) => {
                 setPage(1);
@@ -872,6 +857,7 @@ export default function ContactsPage() {
                 </th>
                 <th>NAME</th>
                 <th>EMAIL</th>
+                <th>COMPANY</th>
                 <th>PHONE</th>
                 <th>LIST</th>
                 <th>ADDED</th>
@@ -892,6 +878,9 @@ export default function ContactsPage() {
                     </td>
                     <td className="name-cell">{c.name || "Unknown"}</td>
                     <td>{c.email}</td>
+                    <td className="company-cell">
+                      <span title={c.companyName || ""}>{c.companyName || "—"}</span>
+                    </td>
                     <td>{c.phone || "—"}</td>
                     <td>
                       <span className="list-pill">
@@ -1062,9 +1051,9 @@ export default function ContactsPage() {
                   </button>
                   <button type="button" className="contacts-import-dropdown-item" role="menuitem" onClick={openSampleConfirmFromMenu}>
                     <span aria-hidden className="contacts-import-dropdown-emoji">
-                      <BarChart3 size={15} strokeWidth={2} />
+                      <FileSpreadsheet size={15} strokeWidth={2} />
                     </span>
-                    Use Sample Data
+                    Download Sample File
                   </button>
                 </div>
               ) : null}
@@ -1131,6 +1120,20 @@ export default function ContactsPage() {
                   onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
                   disabled={addContactSubmitting}
                   autoComplete="email"
+                />
+              </div>
+              <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="add-contact-company">
+                  Company Name <span className="import-modal-optional">optional</span>
+                </label>
+                <input
+                  id="add-contact-company"
+                  className="import-modal-input"
+                  value={addForm.companyName}
+                  onChange={(e) => setAddForm({ ...addForm, companyName: e.target.value })}
+                  placeholder="Acme Corp"
+                  disabled={addContactSubmitting}
+                  autoComplete="organization"
                 />
               </div>
               <div className="import-modal-field">
@@ -1298,6 +1301,19 @@ export default function ContactsPage() {
                 />
               </div>
               <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="contacts-page-edit-company">
+                  Company Name <span className="import-modal-optional">optional</span>
+                </label>
+                <input
+                  id="contacts-page-edit-company"
+                  className="import-modal-input"
+                  value={editForm.companyName}
+                  onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })}
+                  disabled={editSaving}
+                  autoComplete="organization"
+                />
+              </div>
+              <div className="import-modal-field">
                 <label className="import-modal-label" htmlFor="contacts-page-edit-phone">
                   Phone <span className="import-modal-required" aria-hidden="true">*</span>
                 </label>
@@ -1384,13 +1400,13 @@ export default function ContactsPage() {
         </div>
       ) : null}
 
-      {showSampleConfirm ? (
+      {showSampleTemplateModal ? (
         <div
           className="modal-overlay import-modal-overlay"
-          onClick={() => !sampleSubmitting && setShowSampleConfirm(false)}
+          onClick={() => setShowSampleTemplateModal(false)}
         >
           <div
-            className="contact-modal import-modal sample-data-modal contacts-sample-modal-pro"
+            className="contact-modal import-modal sample-data-modal contacts-sample-modal-pro contacts-sample-template-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="sample-data-title"
@@ -1400,26 +1416,31 @@ export default function ContactsPage() {
             <div className="import-modal-header import-modal-header--professional">
               <div className="import-modal-header-main">
                 <div className="import-modal-header-icon contacts-sample-modal-icon" aria-hidden>
-                  <BarChart3 size={24} strokeWidth={2} />
+                  <FileSpreadsheet size={24} strokeWidth={2} />
                 </div>
                 <div className="import-modal-header-copy">
-                  <p className="import-modal-eyebrow">Preview data</p>
-                  <h3 id="sample-data-title">Load sample contacts?</h3>
+                  <p className="import-modal-eyebrow">Sample template</p>
+                  <h3 id="sample-data-title">Download Sample Contact File</h3>
                   <p id="sample-data-desc" className="import-modal-lede">
-                    We’ll add demo contacts so you can try lists, filtering, and campaigns without risking real recipients.
+                    Download a ready-to-use contact import template with the correct column structure. Fill your
+                    contact details and upload the file to import contacts easily.
                   </p>
-                  <ul className="contacts-sample-modal-points">
-                    <li>8 curated contacts with name, email, and phone</li>
-                    <li>Random list assignments using your existing lists</li>
-                  </ul>
+                  <div className="contacts-sample-template-card">
+                    <span className="contacts-sample-template-pill">
+                      <Download size={14} strokeWidth={2} aria-hidden />
+                      Header-only CSV
+                    </span>
+                    <p className="contacts-sample-template-note">
+                      Includes the supported headers: Name, Email, Phone, and Company Name.
+                    </p>
+                  </div>
                 </div>
               </div>
               <button
                 type="button"
                 className="modal-close import-modal-close"
-                onClick={() => !sampleSubmitting && setShowSampleConfirm(false)}
+                onClick={() => setShowSampleTemplateModal(false)}
                 aria-label="Close"
-                disabled={sampleSubmitting}
               >
                 <X size={18} />
               </button>
@@ -1428,18 +1449,17 @@ export default function ContactsPage() {
               <button
                 type="button"
                 className="import-modal-btn-secondary"
-                onClick={() => !sampleSubmitting && setShowSampleConfirm(false)}
-                disabled={sampleSubmitting}
+                onClick={() => setShowSampleTemplateModal(false)}
               >
                 Cancel
               </button>
               <button
                 type="button"
-                className="import-modal-btn-primary import-modal-btn-primary--gradient"
-                onClick={confirmLoadSampleData}
-                disabled={sampleSubmitting}
+                className="import-modal-btn-primary import-modal-btn-primary--gradient contacts-sample-template-download"
+                onClick={handleDownloadSampleFile}
               >
-                {sampleSubmitting ? "Loading…" : "Load sample"}
+                <Download size={16} strokeWidth={2} aria-hidden />
+                Download Sample File
               </button>
             </div>
           </div>

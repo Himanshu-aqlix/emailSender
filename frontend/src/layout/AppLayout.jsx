@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
-  Bell,
   LayoutDashboard,
   Users,
   FileText,
@@ -16,6 +15,7 @@ import {
   Trash2,
   PanelLeftClose,
   PanelLeftOpen,
+  ShieldCheck,
 } from "lucide-react";
 import { getMe } from "../services/authService";
 import { deleteList, getLists, renameList } from "../services/listService";
@@ -142,6 +142,7 @@ export default function AppLayout() {
       templates: "Templates",
       campaigns: "Campaigns",
       analytics: "Analytics",
+      admin: "User Management",
     };
     const label = names[seg];
     document.title = label ? `${label} · Sendrofy` : "Sendrofy";
@@ -371,6 +372,17 @@ export default function AppLayout() {
               <span className="app-nav-link-text">{item.label}</span>
             </NavLink>
           ))}
+
+          {profile?.isAdmin ? (
+            <NavLink
+              to="/admin/users"
+              title="User Management"
+              className={({ isActive }) => `app-nav-link${isActive ? " active" : ""}`}
+            >
+              <ShieldCheck size={15} aria-hidden />
+              <span className="app-nav-link-text">User Management</span>
+            </NavLink>
+          ) : null}
         </nav>
       </aside>
 
@@ -392,7 +404,6 @@ export default function AppLayout() {
             </button>
           </div>
           <div className="app-user">
-            <span className="app-bell"><Bell size={14} /></span>
             <div className="app-user-meta">
               <strong className={profileLoading ? "ui-text-shimmer" : undefined} title={email || undefined}>
                 {displayName}

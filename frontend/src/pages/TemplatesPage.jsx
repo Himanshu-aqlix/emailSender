@@ -331,18 +331,21 @@ export default function TemplatesPage() {
                 >
                   <button type="button" className="template-item" onClick={() => selectTemplate(t)}>
                     <span className="template-item-icon">
-                      <FileText size={14} />
+                      <FileText size={22} strokeWidth={2} />
                     </span>
                     <div className="template-item-body">
-                      <div className="template-item-top">
-                        <strong>{t.name}</strong>
-                        <span className={`template-state ${activeId === t._id ? "active" : "draft"}`}>
-                          {activeId === t._id ? "Active" : "Draft"}
-                        </span>
-                      </div>
-                      <p>{t.subject}</p>
-                      <small><Clock3 size={12} /> Updated {new Date(t.updatedAt || t.createdAt).toLocaleDateString()}</small>
+                      <strong className="template-item-title">{t.name}</strong>
                     </div>
+                  </button>
+                  <div className="fle">
+                  <button
+                    type="button"
+                    className="template-item-meta"
+                    aria-label={`Open template ${t.name || "Untitled"}`}
+                    onClick={() => selectTemplate(t)}
+                  >
+                    <Clock3 size={12} aria-hidden />
+                    <span>Updated {new Date(t.updatedAt || t.createdAt).toLocaleDateString()}</span>
                   </button>
                   <button
                     type="button"
@@ -357,6 +360,7 @@ export default function TemplatesPage() {
                   >
                     <Trash2 size={14} strokeWidth={2} />
                   </button>
+                  </div>
                 </div>
               ))
             ) : (

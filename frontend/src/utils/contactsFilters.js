@@ -11,6 +11,8 @@ const SORT_LABELS = {
   oldest: "Oldest first",
   name_asc: "Name (A → Z)",
   name_desc: "Name (Z → A)",
+  company_asc: "Company (A → Z)",
+  company_desc: "Company (Z → A)",
 };
 
 export function getSortLabel(sort) {

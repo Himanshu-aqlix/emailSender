@@ -59,6 +59,13 @@ export default function AnalyticsPage() {
 
   return (
     <section className="analytics-page">
+      <div className="contacts-head">
+        <div>
+          <h2 className="dashboard-title">Analytics</h2>
+          <p className="dashboard-subtitle">Track campaign engagement, performance rates, and recent delivery activity.</p>
+        </div>
+      </div>
+
       <div className="analytics-grid">
         <div className="panel analytics-card">
           <h4>Engagement breakdown</h4>

@@ -9,6 +9,7 @@ import TemplatesPage from "./pages/TemplatesPage";
 import CampaignsPage from "./pages/CampaignsPage";
 import CampaignDetailPage from "./pages/CampaignDetailPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
+import AdminUserManagementPage from "./pages/AdminUserManagementPage";
 import ListDetailPage from "./pages/ListDetailPage";
 import "react-toastify/dist/ReactToastify.css";
 import "./App.css";
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="campaigns" element={<CampaignsPage />} />
         <Route path="campaigns/:id" element={<CampaignDetailRoute />} />
         <Route path="analytics" element={<AnalyticsPage />} />
+        <Route path="admin/users" element={<AdminUserManagementPage />} />
       </Route>
     </Routes>
     <ToastContainer

@@ -17,9 +17,34 @@ const { enqueueCampaign } = require("../queues/emailQueue");
 const { normalizeRange, buildEngagementTimeline } = require("../utils/campaignEngagementTimeline");
 
 const sign = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+const ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+const USER_ROLE_VALUES = new Set(["admin", "user"]);
 const uploadsRootDir = process.env.AWS_LAMBDA_FUNCTION_NAME
   ? path.join("/tmp", "uploads")
   : path.join(__dirname, "..", "public", "uploads");
+
+const isAdminEmail = (email) => {
+  const normalized = String(email || "").trim().toLowerCase();
+  return !!ADMIN_EMAIL && normalized === ADMIN_EMAIL;
+};
+
+const toSafeUser = (userLike) => {
+  if (!userLike) return null;
+  const email = String(userLike.email || "").trim().toLowerCase();
+  const role = USER_ROLE_VALUES.has(String(userLike.role || "").trim().toLowerCase())
+    ? String(userLike.role).trim().toLowerCase()
+    : "user";
+  return {
+    id: userLike._id ?? userLike.id,
+    email,
+    role,
+    isActive: userLike.isActive !== false,
+    isSystemAdmin: isAdminEmail(email),
+    isAdmin: role === "admin" || isAdminEmail(email),
+    createdAt: userLike.createdAt || null,
+    updatedAt: userLike.updatedAt || null,
+  };
+};
 
 /** Contacts subscribed to any of a campaign's lists (for draft audience when no sends yet). */
 async function countContactsForCampaignLists(campaign, ownerId) {
@@ -83,25 +108,37 @@ const attachContactToList = async (ownerId, contactId, listId) => {
   await Contact.updateOne({ _id: contactId, owner: ownerId }, { $addToSet: { lists: listId } });
 };
 
-/** Parse first sheet of .xlsx / .xls / .csv buffer into { name, email, phone, fields } rows. */
+/** Parse first sheet of .xlsx / .xls / .csv buffer into { name, email, phone, companyName, fields } rows. */
 const parseSpreadsheetBufferToRows = (buffer) => {
   const wb = xlsx.read(buffer, { type: "buffer" });
   const rows = xlsx.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
   return rows
     .map((r) => {
-      const o = Object.fromEntries(Object.entries(r).map(([k, v]) => [String(k).toLowerCase(), v]));
+      const normalizeHeader = (s) =>
+        String(s || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[\s._-]+/g, "");
+      const o = Object.fromEntries(Object.entries(r).map(([k, v]) => [normalizeHeader(k), v]));
+
+      const company = String(o.companyname ?? o.company ?? o.organization ?? o.organisation ?? "").trim();
       const fields = { ...o };
       delete fields.name;
       delete fields.email;
       delete fields.phone;
       delete fields.mobile;
       delete fields.tel;
+      delete fields.company;
+      delete fields.companyname;
+      delete fields.organization;
+      delete fields.organisation;
       const email = String(o.email || "").toLowerCase().trim();
       const phone = String(o.phone ?? o.mobile ?? o.tel ?? "").trim();
       return {
         name: String(o.name || "").trim(),
         email,
         phone,
+        companyName: company,
         fields,
       };
     })
@@ -131,7 +168,7 @@ exports.register = async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
     const user = await User.create({ email, password: hash });
-    res.status(201).json({ token: sign(user._id), user: { id: user._id, email: user.email } });
+    res.status(201).json({ token: sign(user._id), user: toSafeUser(user) });
   } catch (error) {
     if (error.code === 11000) {
       return res.status(400).json({ message: "Email already exists" });
@@ -152,15 +189,16 @@ exports.login = async (req, res) => {
   const safePassword = String(password);
 
   const user = await User.findOne({ email: safeEmail });
+  if (user && user.isActive === false) return res.status(403).json({ message: "This account has been deactivated" });
   if (!user || !(await bcrypt.compare(safePassword, user.password))) return res.status(401).json({ message: "Invalid credentials" });
-  res.json({ token: sign(user._id), user: { id: user._id, email: user.email } });
+  res.json({ token: sign(user._id), user: toSafeUser(user) });
 };
 
 exports.me = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select("email").lean();
+    const user = await User.findById(req.user.id).select("email role isActive createdAt updatedAt").lean();
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    res.json({ id: user._id, email: user.email });
+    res.json(toSafeUser(user));
   } catch {
     res.status(500).json({ message: "Internal server error" });
   }
@@ -179,12 +217,16 @@ exports.uploadExcel = async (req, res) => {
 
   const parsed = parseSpreadsheetBufferToRows(req.file.buffer);
   if (!parsed.length) return res.status(400).json({ message: "No valid rows (need email column)" });
+  const detectedCompany = parsed.some((r) => String(r.companyName || "").trim());
+  const importedCompanyCount = parsed.reduce((n, r) => (String(r.companyName || "").trim() ? n + 1 : n), 0);
+  console.log("[contacts-import] uploadExcel detectedCompanyColumn=", detectedCompany, "companyValues=", importedCompanyCount, "rows=", parsed.length);
 
   let count = 0;
   for (const row of parsed) {
     let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
     if (contact) {
       if (row.name) contact.name = row.name;
+      if (row.companyName) contact.companyName = row.companyName;
       if (row.phone) contact.phone = row.phone;
       Object.assign(contact.fields || {}, row.fields || {});
       await contact.save();
@@ -193,6 +235,7 @@ exports.uploadExcel = async (req, res) => {
       contact = await Contact.create({
         owner: req.user.id,
         name: row.name,
+        companyName: row.companyName || "",
         email: row.email,
         phone: row.phone || "",
         lists: list ? [list._id] : [],
@@ -292,6 +335,7 @@ exports.getContacts = async (req, res) => {
     const q = String(req.query.q).trim();
     filter.$or = [
       { name: { $regex: q, $options: "i" } },
+      { companyName: { $regex: q, $options: "i" } },
       { email: { $regex: q, $options: "i" } },
       { phone: { $regex: q, $options: "i" } },
     ];
@@ -302,6 +346,8 @@ exports.getContacts = async (req, res) => {
   if (sortKey === "oldest") sort = { createdAt: 1 };
   else if (sortKey === "name_asc") sort = { name: 1, createdAt: -1 };
   else if (sortKey === "name_desc") sort = { name: -1, createdAt: -1 };
+  else if (sortKey === "company_asc") sort = { companyName: 1, name: 1, createdAt: -1 };
+  else if (sortKey === "company_desc") sort = { companyName: -1, name: 1, createdAt: -1 };
   else if (sortKey === "newest") sort = { createdAt: -1 };
 
   const [items, total] = await Promise.all([
@@ -389,10 +435,11 @@ exports.removeContactFromList = async (req, res) => {
   return res.json({ message: "Contact removed from list" });
 };
 exports.addSingleContact = async (req, res) => {
-  const { name, email, listId, listName, fields = {}, phone } = req.body;
+  const { name, email, listId, listName, fields = {}, phone, companyName } = req.body;
   if (!email) return res.status(400).json({ message: "Email is required" });
   const phoneTrim = phone != null ? String(phone).trim() : "";
   if (!phoneTrim) return res.status(400).json({ message: "Phone is required" });
+  const companyTrim = companyName != null ? String(companyName).trim() : "";
 
   const listIdRaw = listId ? String(listId).trim() : "";
   const listNameRaw = listName != null ? String(listName).trim() : "";
@@ -414,6 +461,7 @@ exports.addSingleContact = async (req, res) => {
 
   if (contact) {
     contact.name = (name || "").trim() || contact.name;
+    contact.companyName = companyTrim || contact.companyName || "";
     contact.phone = phoneTrim;
     Object.assign(contact.fields || {}, fields);
     await contact.save();
@@ -422,6 +470,7 @@ exports.addSingleContact = async (req, res) => {
     contact = await Contact.create({
       owner: req.user.id,
       name: (name || "").trim(),
+      companyName: companyTrim,
       email: emailNorm,
       phone: phoneTrim,
       lists: resolvedListId ? [resolvedListId] : [],
@@ -505,12 +554,16 @@ exports.bulkContacts = async (req, res) => {
 
     const parsed = parseSpreadsheetBufferToRows(req.file.buffer);
     if (!parsed.length) return res.status(400).json({ message: "No valid rows (need email column)" });
+    const detectedCompany = parsed.some((r) => String(r.companyName || "").trim());
+    const importedCompanyCount = parsed.reduce((n, r) => (String(r.companyName || "").trim() ? n + 1 : n), 0);
+    console.log("[contacts-import] bulkContacts detectedCompanyColumn=", detectedCompany, "companyValues=", importedCompanyCount, "rows=", parsed.length);
 
     let processed = 0;
     for (const row of parsed) {
       let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
       if (contact) {
         if (row.name) contact.name = row.name;
+        if (row.companyName) contact.companyName = row.companyName;
         if (row.phone) contact.phone = row.phone;
         Object.assign(contact.fields || {}, row.fields || {});
         await contact.save();
@@ -519,6 +572,7 @@ exports.bulkContacts = async (req, res) => {
         contact = await Contact.create({
           owner: req.user.id,
           name: row.name,
+          companyName: row.companyName || "",
           email: row.email,
           phone: row.phone || "",
           lists: [list._id],
@@ -558,12 +612,23 @@ exports.bulkImportToLists = async (req, res) => {
 
     const parsedRows = parseSpreadsheetBufferToRows(req.file.buffer);
     if (!parsedRows.length) return res.status(400).json({ message: "No valid rows (need email column)" });
+    const detectedCompany = parsedRows.some((r) => String(r.companyName || "").trim());
+    const importedCompanyCount = parsedRows.reduce((n, r) => (String(r.companyName || "").trim() ? n + 1 : n), 0);
+    console.log(
+      "[contacts-import] bulkImportToLists detectedCompanyColumn=",
+      detectedCompany,
+      "companyValues=",
+      importedCompanyCount,
+      "rows=",
+      parsedRows.length
+    );
 
     const savedIds = [];
     for (const row of parsedRows) {
       let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
       if (contact) {
         if (row.name) contact.name = row.name;
+        if (row.companyName) contact.companyName = row.companyName;
         if (row.phone) contact.phone = row.phone;
         Object.assign(contact.fields || {}, row.fields || {});
         await contact.save();
@@ -571,6 +636,7 @@ exports.bulkImportToLists = async (req, res) => {
         contact = await Contact.create({
           owner: req.user.id,
           name: row.name,
+          companyName: row.companyName || "",
           email: row.email,
           phone: row.phone || "",
           lists: validListIds,
@@ -679,13 +745,14 @@ exports.bulkAssignContactsToLists = async (req, res) => {
 };
 
 exports.updateContact = async (req, res) => {
-  const { name, email, phone } = req.body;
+  const { name, email, phone, companyName } = req.body;
   const contact = await Contact.findOne({ _id: req.params.id, owner: req.user.id });
   if (!contact) return res.status(404).json({ message: "Contact not found" });
 
   const nameTrim = name != null ? String(name).trim() : "";
   const emailTrim = email != null ? String(email).toLowerCase().trim() : "";
   const phoneTrim = phone != null ? String(phone).trim() : "";
+  const companyTrim = companyName != null ? String(companyName).trim() : "";
 
   if (!emailTrim) return res.status(400).json({ message: "Email is required" });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrim)) {
@@ -697,6 +764,7 @@ exports.updateContact = async (req, res) => {
   if (dup) return res.status(409).json({ message: "A contact with this email already exists" });
 
   contact.name = nameTrim;
+  contact.companyName = companyTrim;
   contact.email = emailTrim;
   contact.phone = phoneTrim;
   await contact.save();
@@ -1376,6 +1444,103 @@ exports.getDashboardSummary = async (req, res) => {
     audienceRows: Array.from(audienceMap.values()).sort((a, b) => b.count - a.count).slice(0, 5),
   });
 };
+
+exports.getAdminUsers = async (req, res) => {
+  try {
+    const users = await User.find({})
+      .select("email role isActive createdAt updatedAt")
+      .sort({ createdAt: -1 })
+      .lean();
+    return res.json(users.map((user) => toSafeUser(user)));
+  } catch {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.createAdminUser = async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+    const requestedRole = String(req.body?.role || "user").trim().toLowerCase();
+    const role = USER_ROLE_VALUES.has(requestedRole) ? requestedRole : "user";
+    const isActive = req.body?.isActive !== false;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password are required" });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+
+    const hash = await bcrypt.hash(password, 10);
+    const user = await User.create({
+      email,
+      password: hash,
+      role,
+      isActive,
+    });
+    return res.status(201).json(toSafeUser(user));
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ message: "Email already exists" });
+    }
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.updateAdminUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const currentEmail = String(user.email || "").trim().toLowerCase();
+    const nextEmail = req.body?.email != null ? String(req.body.email).trim().toLowerCase() : currentEmail;
+    const requestedRole = req.body?.role != null ? String(req.body.role).trim().toLowerCase() : String(user.role || "user");
+    const nextRole = USER_ROLE_VALUES.has(requestedRole) ? requestedRole : "user";
+    const nextIsActive = req.body?.isActive != null ? req.body.isActive !== false : user.isActive !== false;
+    const password = req.body?.password != null ? String(req.body.password) : "";
+
+    if (!nextEmail) return res.status(400).json({ message: "Email is required" });
+    if (password && password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+    if (isAdminEmail(currentEmail) && nextEmail !== currentEmail) {
+      return res.status(400).json({ message: "Configured admin email cannot be changed" });
+    }
+    if (isAdminEmail(currentEmail) && !nextIsActive) {
+      return res.status(400).json({ message: "Configured admin account cannot be deactivated" });
+    }
+
+    user.email = nextEmail;
+    user.role = nextRole;
+    user.isActive = nextIsActive;
+    if (password) user.password = await bcrypt.hash(password, 10);
+    await user.save();
+    return res.json(toSafeUser(user));
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ message: "Email already exists" });
+    }
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.toggleAdminUserStatus = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    const email = String(user.email || "").trim().toLowerCase();
+    if (isAdminEmail(email)) {
+      return res.status(400).json({ message: "Configured admin account cannot be deactivated" });
+    }
+    user.isActive = !(user.isActive !== false);
+    await user.save();
+    return res.json(toSafeUser(user));
+  } catch {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 exports.getLogs = async (req, res) =>
   res.json(
     await EmailLog.find({ owner: req.user.id })

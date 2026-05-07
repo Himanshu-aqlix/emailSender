@@ -5,8 +5,6 @@ export const getContacts = (queryString = "") =>
 
 export const createContact = (payload) => api.post("/api/contacts", payload);
 
-export const postSampleContacts = () => api.post("/api/contacts/sample-data");
-
 export const bulkContacts = (formData) => api.post("/api/contacts/bulk", formData);
 export const bulkImportToLists = (formData) => api.post("/api/contacts/bulk-import-to-lists", formData);
 
