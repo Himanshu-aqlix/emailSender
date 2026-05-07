@@ -425,12 +425,46 @@ exports.getContactOwners = async (req, res) => {
   }
 };
 exports.getListById = async (req, res) => {
-  const list = await List.findOne({ _id: req.params.id, owner: req.user.id }).populate({
-    path: "contacts",
-    options: { sort: { createdAt: -1 } },
-  });
+  const page = Math.max(parseInt(req.query.page || "1", 10), 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 100);
+  const list = await List.findOne({ _id: req.params.id, owner: req.user.id }).lean();
   if (!list) return res.status(404).json({ message: "List not found" });
-  return res.json(list);
+
+  const contactFilter = { owner: req.user.id, lists: list._id };
+  const filterBy = String(req.query.filterBy || "all");
+  if (filterBy === "hasPhone") contactFilter.phone = { $regex: /\S/ };
+  if (filterBy === "noPhone") contactFilter.$or = [{ phone: { $regex: /^\s*$/ } }, { phone: null }, { phone: { $exists: false } }];
+
+  const sortBy = String(req.query.sortBy || "newest");
+  let sort = { createdAt: -1 };
+  if (sortBy === "oldest") sort = { createdAt: 1 };
+  if (sortBy === "name") sort = { name: 1, email: 1 };
+
+  const [contactTotal, filteredTotal] = await Promise.all([
+    Contact.countDocuments({ owner: req.user.id, lists: list._id }),
+    Contact.countDocuments(contactFilter),
+  ]);
+  const totalPages = Math.max(Math.ceil(filteredTotal / limit), 1);
+  const safePage = Math.min(page, totalPages);
+  const contacts = await Contact.find(contactFilter)
+    .sort(sort)
+    .skip((safePage - 1) * limit)
+    .limit(limit)
+    .lean();
+
+  return res.json({
+    ...list,
+    contacts,
+    contactTotal,
+    pagination: {
+      page: safePage,
+      limit,
+      total: filteredTotal,
+      totalPages,
+      hasNextPage: safePage * limit < filteredTotal,
+      hasPrevPage: safePage > 1,
+    },
+  });
 };
 exports.getLists = async (req, res) => res.json(await List.find({ owner: req.user.id }).sort({ createdAt: -1 }));
 exports.createList = async (req, res) => {
@@ -1645,6 +1679,29 @@ exports.updateAdminUser = async (req, res) => {
   }
 };
 
+exports.deleteAdminUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const targetId = String(user._id);
+    const currentUserId = String(req.user.id);
+    const email = String(user.email || "").trim().toLowerCase();
+
+    if (targetId === currentUserId) {
+      return res.status(400).json({ message: "You cannot delete your own account while signed in" });
+    }
+    if (isAdminEmail(email)) {
+      return res.status(400).json({ message: "Configured system admin account cannot be deleted" });
+    }
+
+    await User.deleteOne({ _id: user._id });
+    return res.json({ message: "User deleted successfully", user: toSafeUser(user) });
+  } catch {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 exports.toggleAdminUserStatus = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -1661,12 +1718,32 @@ exports.toggleAdminUserStatus = async (req, res) => {
   }
 };
 
-exports.getLogs = async (req, res) =>
-  res.json(
-    await EmailLog.find({ owner: req.user.id })
-      .populate("campaignId", "name")
-      .sort({ createdAt: -1 })
-  );
+exports.getLogs = async (req, res) => {
+  const page = Math.max(parseInt(req.query.page || "1", 10), 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 100);
+  const filter = { owner: req.user.id };
+
+  const total = await EmailLog.countDocuments(filter);
+  const totalPages = Math.max(Math.ceil(total / limit), 1);
+  const safePage = Math.min(page, totalPages);
+  const items = await EmailLog.find(filter)
+    .populate("campaignId", "name")
+    .sort({ createdAt: -1 })
+    .skip((safePage - 1) * limit)
+    .limit(limit);
+
+  return res.json({
+    items,
+    pagination: {
+      page: safePage,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: safePage * limit < total,
+      hasPrevPage: safePage > 1,
+    },
+  });
+};
 
 exports.trackOpen = async (req, res) => {
   await EmailLog.findByIdAndUpdate(req.params.id, { opened: true });

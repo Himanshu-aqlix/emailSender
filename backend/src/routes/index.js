@@ -18,6 +18,7 @@ router.get("/api/admin/users", auth, adminOnly, c.getAdminUsers);
 router.post("/api/admin/users", auth, adminOnly, [body("email").isEmail(), body("password").isLength({ min: 6 })], c.createAdminUser);
 router.put("/api/admin/users/:id", auth, adminOnly, [body("email").optional().isEmail(), body("password").optional().isLength({ min: 6 })], c.updateAdminUser);
 router.patch("/api/admin/users/:id/status", auth, adminOnly, c.toggleAdminUserStatus);
+router.delete("/api/admin/users/:id", auth, adminOnly, c.deleteAdminUser);
 router.post("/api/upload", auth, upload.single("file"), c.uploadExcel);
 router.post("/api/uploads/image", auth, upload.single("file"), c.uploadTemplateImage);
 router.post("/api/uploads/attachment", auth, upload.single("file"), c.uploadTemplateAttachment);

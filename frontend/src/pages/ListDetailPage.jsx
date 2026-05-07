@@ -29,6 +29,14 @@ import { errorToast, messageFromAxios, successToast } from "../utils/toast";
 import { TableSkeleton } from "../components/Loaders";
 
 const LIST_CONTACT_MENU_MIN_WIDTH = 236;
+const LIST_CONTACT_PAGE_LIMITS = [10, 25, 50, 100];
+const EMPTY_LIST_PAGINATION = {
+  page: 1,
+  totalPages: 1,
+  total: 0,
+  hasNextPage: false,
+  hasPrevPage: false,
+};
 
 export default function ListDetailPage() {
   const { id } = useParams();
@@ -37,6 +45,8 @@ export default function ListDetailPage() {
 
   const [listName, setListName] = useState("");
   const [contacts, setContacts] = useState([]);
+  const [contactTotal, setContactTotal] = useState(0);
+  const [pagination, setPagination] = useState(EMPTY_LIST_PAGINATION);
   const [loading, setLoading] = useState(true);
 
   const [showAddModal, setShowAddModal] = useState(false);
@@ -50,6 +60,8 @@ export default function ListDetailPage() {
   const [importResult, setImportResult] = useState(null);
   const [sortBy, setSortBy] = useState("newest");
   const [filterBy, setFilterBy] = useState("all");
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(10);
 
   const [openContactMenuRowId, setOpenContactMenuRowId] = useState(null);
   const [contactMenuCoords, setContactMenuCoords] = useState(null);
@@ -69,22 +81,35 @@ export default function ListDetailPage() {
   const load = useCallback(async () => {
     if (!id) return;
     setLoading(true);
+    const params = new URLSearchParams();
+    params.set("page", String(page));
+    params.set("limit", String(limit));
+    params.set("sortBy", sortBy);
+    params.set("filterBy", filterBy);
     try {
-      const { data } = await getListById(id);
+      const { data } = await getListById(id, params.toString());
       setListName(data?.name || `List ${String(id).slice(-6)}`);
       setContacts(Array.isArray(data?.contacts) ? data.contacts : []);
+      setContactTotal(Number(data?.contactTotal || 0));
+      setPagination(data?.pagination || EMPTY_LIST_PAGINATION);
     } catch (e) {
       setListName("");
       setContacts([]);
+      setContactTotal(0);
+      setPagination(EMPTY_LIST_PAGINATION);
       errorToast(messageFromAxios(e, "Something went wrong"));
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, page, limit, sortBy, filterBy]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [id]);
 
   useLayoutEffect(() => {
     if (!openContactMenuRowId) {
@@ -328,18 +353,8 @@ export default function ListDetailPage() {
   };
 
   const displayContacts = useMemo(() => {
-    let rows = [...contacts];
-    if (filterBy === "hasPhone") rows = rows.filter((c) => String(c.phone || "").trim().length > 0);
-    if (filterBy === "noPhone") rows = rows.filter((c) => String(c.phone || "").trim().length === 0);
-
-    rows.sort((a, b) => {
-      if (sortBy === "name") return String(a.name || "").localeCompare(String(b.name || ""));
-      const aTime = new Date(a.createdAt || 0).getTime();
-      const bTime = new Date(b.createdAt || 0).getTime();
-      return sortBy === "oldest" ? aTime - bTime : bTime - aTime;
-    });
-    return rows;
-  }, [contacts, filterBy, sortBy]);
+    return contacts;
+  }, [contacts]);
 
   const menuRowContact = useMemo(
     () =>
@@ -357,7 +372,7 @@ export default function ListDetailPage() {
           <div>
             <h2 className="dashboard-title">{listName || "List"}</h2>
             <p className="dashboard-subtitle">
-              {loading ? "Loading…" : `${contacts.length} contact${contacts.length === 1 ? "" : "s"} in this list · last updated today`}
+              {loading ? "Loading..." : `${contactTotal} contact${contactTotal === 1 ? "" : "s"} in this list · last updated today`}
             </p>
           </div>
         </div>
@@ -385,13 +400,19 @@ export default function ListDetailPage() {
           </div>
           <TableSkeleton rows={8} columns={7} showAvatar />
         </div>
-      ) : contacts.length ? (
+      ) : contactTotal ? (
         <div className="contacts-table-wrap list-detail-table-wrap">
           <div className="list-detail-toolbar">
             <div className="list-detail-toolbar-left">
               <label className="list-detail-control">
                 <span>Filter</span>
-                <select value={filterBy} onChange={(e) => setFilterBy(e.target.value)}>
+                <select
+                  value={filterBy}
+                  onChange={(e) => {
+                    setFilterBy(e.target.value);
+                    setPage(1);
+                  }}
+                >
                   <option value="all">All contacts</option>
                   <option value="hasPhone">With phone</option>
                   <option value="noPhone">Without phone</option>
@@ -399,14 +420,26 @@ export default function ListDetailPage() {
               </label>
               <label className="list-detail-control">
                 <span><ArrowUpDown size={13} /> Sort</span>
-                <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+                <select
+                  value={sortBy}
+                  onChange={(e) => {
+                    setSortBy(e.target.value);
+                    setPage(1);
+                  }}
+                >
                   <option value="newest">Newest</option>
                   <option value="oldest">Oldest</option>
                   <option value="name">Name A-Z</option>
                 </select>
               </label>
             </div>
-            <span>Showing {displayContacts.length} of {contacts.length}</span>
+            <span>
+              Showing{" "}
+              {pagination.total
+                ? `${(pagination.page - 1) * limit + 1}-${(pagination.page - 1) * limit + displayContacts.length}`
+                : "0"}{" "}
+              of {pagination.total}
+            </span>
           </div>
           <table className="contacts-table">
             <thead>
@@ -421,7 +454,7 @@ export default function ListDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {displayContacts.map((c, idx) => {
+              {displayContacts.length ? displayContacts.map((c, idx) => {
                 const menuOpen = openContactMenuRowId === c._id;
                 return (
                   <tr key={c._id}>
@@ -430,7 +463,7 @@ export default function ListDetailPage() {
                         <span className="list-contact-avatar">{getInitials(c.name, c.email)}</span>
                         <div>
                           <strong>{c.name || "Unknown"}</strong>
-                          <small>Contact #{String(idx + 1).padStart(4, "0")}</small>
+                          <small>Contact #{String((pagination.page - 1) * limit + idx + 1).padStart(4, "0")}</small>
                         </div>
                       </div>
                     </td>
@@ -462,9 +495,57 @@ export default function ListDetailPage() {
                     </td>
                   </tr>
                 );
-              })}
+              }) : (
+                <tr>
+                  <td colSpan={7}>
+                    <div className="contacts-empty-table-message">No contacts match this filter.</div>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
+          <div className="contacts-pagination campaign-recipients-pagination">
+            <div className="campaign-recipients-pagination-start">
+              <label className="campaign-recipients-per-page">
+                <span className="campaign-recipients-per-page-label">Rows per page</span>
+                <select
+                  value={limit}
+                  onChange={(e) => {
+                    setLimit(Number(e.target.value));
+                    setPage(1);
+                  }}
+                  aria-label="List contacts per page"
+                >
+                  {LIST_CONTACT_PAGE_LIMITS.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="campaign-recipients-page-meta" aria-live="polite">
+              Page {pagination.page} of {pagination.totalPages}
+            </p>
+            <div className="campaign-recipients-pagination-end">
+              <button
+                type="button"
+                className="campaign-recipients-page-btn"
+                disabled={!pagination.hasPrevPage}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className="campaign-recipients-page-btn"
+                disabled={!pagination.hasNextPage}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
       {openContactMenuRowId && contactMenuCoords && menuRowContact

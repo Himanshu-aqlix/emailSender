@@ -9,15 +9,28 @@ import { CardSkeleton, TableSkeleton } from "../components/Loaders";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
+const ANALYTICS_LOG_PAGE_LIMITS = [10, 25, 50, 100];
+const EMPTY_LOG_PAGINATION = {
+  page: 1,
+  totalPages: 1,
+  total: 0,
+  hasNextPage: false,
+  hasPrevPage: false,
+};
+
 export default function AnalyticsPage() {
   const [logs, setLogs] = useState([]);
+  const [logPage, setLogPage] = useState(1);
+  const [logLimit, setLogLimit] = useState(10);
+  const [logPagination, setLogPagination] = useState(EMPTY_LOG_PAGINATION);
   const [stats, setStats] = useState({ totalSent: 0, opened: 0, clicked: 0, failed: 0 });
-  const [loading, setLoading] = useState(true);
+  const [chartsLoading, setChartsLoading] = useState(true);
+  const [logsLoading, setLogsLoading] = useState(true);
+
   useEffect(() => {
-    setLoading(true);
-    Promise.all([getLogs(), getStats(), getBrevoEvents({ limit: 100, days: 30 })])
-      .then(([logsRes, statsRes, brevoRes]) => {
-        setLogs(logsRes.data || []);
+    setChartsLoading(true);
+    Promise.all([getStats(), getBrevoEvents({ limit: 100, days: 30 })])
+      .then(([statsRes, brevoRes]) => {
         const brevo = brevoRes?.data;
         const events = brevo?.events || brevo?.events?.items || brevo?.items || brevo?.data || [];
         const list = Array.isArray(events) ? events : [];
@@ -34,15 +47,35 @@ export default function AnalyticsPage() {
         });
       })
       .catch(() => {
-        setLogs([]);
         setStats({ totalSent: 0, opened: 0, clicked: 0, failed: 0 });
       })
-      .finally(() => setLoading(false));
+      .finally(() => setChartsLoading(false));
   }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams();
+    params.set("page", String(logPage));
+    params.set("limit", String(logLimit));
+
+    setLogsLoading(true);
+    getLogs(params.toString())
+      .then((res) => {
+        const data = res.data || {};
+        setLogs(Array.isArray(data.items) ? data.items : []);
+        setLogPagination(data.pagination || EMPTY_LOG_PAGINATION);
+      })
+      .catch(() => {
+        setLogs([]);
+        setLogPagination(EMPTY_LOG_PAGINATION);
+      })
+      .finally(() => setLogsLoading(false));
+  }, [logPage, logLimit]);
 
   const openRate = stats.totalSent ? (stats.opened / stats.totalSent) * 100 : 0;
   const clickRate = stats.totalSent ? (stats.clicked / stats.totalSent) * 100 : 0;
   const failRate = stats.totalSent ? (stats.failed / stats.totalSent) * 100 : 0;
+  const logStart = logPagination.total ? (logPagination.page - 1) * logLimit + 1 : 0;
+  const logEnd = logPagination.total ? (logPagination.page - 1) * logLimit + logs.length : 0;
 
   const engagementData = {
     labels: ["Clicked", "Not Opened", "Opened"],
@@ -75,7 +108,7 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {loading ? (
+      {chartsLoading ? (
         <CardSkeleton count={2} />
       ) : (
       <div className="analytics-grid">
@@ -103,8 +136,13 @@ export default function AnalyticsPage() {
       )}
 
       <div className="panel logs-panel">
-        <h4>Recent email logs</h4>
-        {loading ? (
+        <div className="logs-panel-head">
+          <h4>Recent email logs</h4>
+          <span>
+            Showing {logStart ? `${logStart}-${logEnd}` : "0"} of {logPagination.total}
+          </span>
+        </div>
+        {logsLoading ? (
           <TableSkeleton rows={6} columns={6} />
         ) : !logs.length ? (
           <div className="analytics-empty">
@@ -138,6 +176,50 @@ export default function AnalyticsPage() {
             </tbody>
           </table>
         )}
+        {!logsLoading && logPagination.total ? (
+          <div className="contacts-pagination campaign-recipients-pagination analytics-logs-pagination">
+            <div className="campaign-recipients-pagination-start">
+              <label className="campaign-recipients-per-page">
+                <span className="campaign-recipients-per-page-label">Rows per page</span>
+                <select
+                  value={logLimit}
+                  onChange={(e) => {
+                    setLogLimit(Number(e.target.value));
+                    setLogPage(1);
+                  }}
+                  aria-label="Email logs per page"
+                >
+                  {ANALYTICS_LOG_PAGE_LIMITS.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="campaign-recipients-page-meta" aria-live="polite">
+              Page {logPagination.page} of {logPagination.totalPages}
+            </p>
+            <div className="campaign-recipients-pagination-end">
+              <button
+                type="button"
+                className="campaign-recipients-page-btn"
+                disabled={!logPagination.hasPrevPage}
+                onClick={() => setLogPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className="campaign-recipients-page-btn"
+                disabled={!logPagination.hasNextPage}
+                onClick={() => setLogPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   );

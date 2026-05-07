@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Pencil, Search, ShieldCheck, UserPlus, Users, X } from "lucide-react";
+import { Activity, AlertTriangle, Pencil, Search, ShieldCheck, Trash2, UserPlus, Users, X } from "lucide-react";
 import { getMe } from "../services/authService";
-import { createAdminUser, getAdminUsers, updateAdminUser } from "../services/adminUserService";
+import { createAdminUser, deleteAdminUser, getAdminUsers, updateAdminUser } from "../services/adminUserService";
 import { formatCreatedDateTime } from "../utils/formatDateTime";
 import { errorToast, messageFromAxios, successToast } from "../utils/toast";
 import { readStoredUser } from "../utils/userDisplay";
@@ -30,6 +30,9 @@ export default function AdminUserManagementPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState("");
   const [search, setSearch] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -103,6 +106,38 @@ export default function AdminUserManagementPage() {
     setEditingUser(null);
     setForm(EMPTY_FORM);
     setFormError("");
+  };
+
+  const isCurrentUser = (user) => String(user?.id || "") === String(profile?.id || "");
+  const canDeleteUser = (user) => user && !isCurrentUser(user) && !user.isSystemAdmin;
+
+  const openDeleteModal = (user) => {
+    if (!canDeleteUser(user)) return;
+    setDeleteConfirmText("");
+    setDeleteTarget(user);
+  };
+
+  const closeDeleteModal = () => {
+    if (deleteSubmitting) return;
+    setDeleteTarget(null);
+    setDeleteConfirmText("");
+  };
+
+  const confirmDeleteUser = async () => {
+    if (!deleteTarget?.id || deleteSubmitting || deleteConfirmText.trim() !== "DELETE") return;
+    setDeleteSubmitting(true);
+    try {
+      await deleteAdminUser(deleteTarget.id);
+      setUsers((prev) => prev.filter((user) => String(user.id) !== String(deleteTarget.id)));
+      successToast("User deleted successfully");
+      setDeleteTarget(null);
+      setDeleteConfirmText("");
+      await loadUsers();
+    } catch (error) {
+      errorToast(messageFromAxios(error, "Could not delete user"));
+    } finally {
+      setDeleteSubmitting(false);
+    }
   };
 
   const submitForm = async () => {
@@ -255,28 +290,45 @@ export default function AdminUserManagementPage() {
             </thead>
             <tbody>
               {filteredUsers.length ? (
-                filteredUsers.map((user) => (
-                  <tr key={user.id}>
-                    <td>
-                      <div className="admin-users-email-cell">
-                        <strong>{user.email}</strong>
-                        {user.isSystemAdmin ? <span className="admin-users-system-badge">System admin</span> : null}
-                      </div>
-                    </td>
-                    <td>
-                      <span className={`admin-users-role-badge is-${user.role}`}>{user.role}</span>
-                    </td>
-                    <td>{formatCreatedDateTime(user.createdAt)}</td>
-                    <td>{formatCreatedDateTime(user.updatedAt)}</td>
-                    <td>
-                      <div className="admin-users-actions">
-                        <button type="button" className="ghost-btn admin-users-action-btn" onClick={() => openEditModal(user)}>
-                          <Pencil size={14} /> Edit
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                filteredUsers.map((user) => {
+                  const deleteDisabled = !canDeleteUser(user);
+                  const deleteTitle = isCurrentUser(user)
+                    ? "You cannot delete your own signed-in account"
+                    : user.isSystemAdmin
+                      ? "System admin accounts are protected"
+                      : "Delete user";
+                  return (
+                    <tr key={user.id}>
+                      <td>
+                        <div className="admin-users-email-cell">
+                          <strong>{user.email}</strong>
+                          {user.isSystemAdmin ? <span className="admin-users-system-badge">System admin</span> : null}
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`admin-users-role-badge is-${user.role}`}>{user.role}</span>
+                      </td>
+                      <td>{formatCreatedDateTime(user.createdAt)}</td>
+                      <td>{formatCreatedDateTime(user.updatedAt)}</td>
+                      <td>
+                        <div className="admin-users-actions">
+                          <button type="button" className="ghost-btn admin-users-action-btn" onClick={() => openEditModal(user)}>
+                            <Pencil size={14} /> Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-btn admin-users-action-btn admin-users-delete-btn"
+                            onClick={() => openDeleteModal(user)}
+                            disabled={deleteDisabled}
+                            title={deleteTitle}
+                          >
+                            <Trash2 size={14} /> Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               ) : (
                 <tr>
                   <td colSpan="5" className="admin-users-empty-cell">No users found for the current filter.</td>
@@ -379,6 +431,79 @@ export default function AdminUserManagementPage() {
               </button>
               <button type="button" className="import-modal-btn-primary import-modal-btn-primary--gradient" onClick={submitForm} disabled={saving}>
                 {saving ? <ButtonLoader label="Saving user" /> : editingUser ? "Save Changes" : "Create User"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteTarget ? (
+        <div className="modal-overlay import-modal-overlay" onClick={closeDeleteModal}>
+          <div
+            className="contact-modal import-modal admin-user-delete-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="admin-user-delete-title"
+            aria-describedby="admin-user-delete-desc"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="admin-user-delete-head">
+              <div className="admin-user-delete-head-main">
+                <div className="admin-user-delete-icon" aria-hidden>
+                  <AlertTriangle size={24} strokeWidth={2} />
+                </div>
+                <div>
+                  <h3 id="admin-user-delete-title">Remove this user account?</h3>
+                  <p id="admin-user-delete-desc" className="import-modal-lede">
+                    This will permanently remove this user and stop their ability to sign in. This action cannot be undone.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="modal-close import-modal-close"
+                onClick={closeDeleteModal}
+                aria-label="Close"
+                disabled={deleteSubmitting}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="admin-user-delete-subject">
+              <span>User</span>
+              <strong>{deleteTarget.email}</strong>
+            </div>
+
+            <div className="admin-user-delete-body">
+              <label className="admin-user-delete-confirm-label" htmlFor="admin-user-delete-confirm">
+                To confirm, type DELETE below
+              </label>
+              <input
+                id="admin-user-delete-confirm"
+                className="admin-user-delete-confirm-input"
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                placeholder="DELETE"
+                disabled={deleteSubmitting}
+                autoFocus
+              />
+              <p className="admin-user-delete-note">
+                Existing campaign, contact, and analytics records remain in place.
+              </p>
+            </div>
+
+            <div className="admin-user-delete-footer">
+              <button type="button" className="import-modal-btn-secondary" onClick={closeDeleteModal} disabled={deleteSubmitting}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="admin-user-delete-confirm-btn"
+                onClick={confirmDeleteUser}
+                disabled={deleteSubmitting || deleteConfirmText.trim() !== "DELETE"}
+              >
+                {deleteSubmitting ? <ButtonLoader label="Deleting user" /> : "Delete User"}
               </button>
             </div>
           </div>
