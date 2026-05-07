@@ -375,6 +375,17 @@ export default function TemplatesPage() {
           </div>
         </aside>
 
+        {loading ? (
+          <>
+            <div className="template-editor-card middle">
+              <CardSkeleton count={1} />
+            </div>
+            <div className="template-preview-card">
+              <CardSkeleton count={1} />
+            </div>
+          </>
+        ) : (
+        <>
         <div className="template-editor-card middle">
           <div className="template-meta">
             <label className="template-meta-field" htmlFor="template-name-input">
@@ -463,6 +474,8 @@ export default function TemplatesPage() {
         </div>
 
         <TemplatePreview subject={subject} html={htmlContent} />
+        </>
+        )}
       </div>
       <input
         ref={attachmentInputRef}

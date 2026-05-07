@@ -288,10 +288,12 @@ export default function AdminUserManagementPage() {
         </div>
       </div>
 
+      {!loading ? (
       <div className="admin-users-footnote">
         <span>Showing {filteredUsers.length} of {users.length}</span>
         <span>Updated just now</span>
       </div>
+      ) : null}
 
       {showModal ? (
         <div className="modal-overlay import-modal-overlay" onClick={closeModal}>

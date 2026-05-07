@@ -668,7 +668,7 @@ export default function DashboardPage() {
           <div className="audience-head">
             <div>
               <small>Audience</small>
-              <h3>{contactsCount}</h3>
+              <h3>{loading ? "..." : contactsCount}</h3>
               <p>Total contacts across all lists</p>
             </div>
             <span className="audience-icon"><Users size={18} /></span>
