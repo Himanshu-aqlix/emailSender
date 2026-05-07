@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ArrowUpFromLine,
   Check,
+  CheckCircle2,
   ChevronDown,
   Download,
   FileSpreadsheet,
@@ -98,6 +99,7 @@ export default function ContactsPage() {
   const [importModalError, setImportModalError] = useState("");
   const [importSelectedFile, setImportSelectedFile] = useState(null);
   const [importSubmitting, setImportSubmitting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
   const [error, setError] = useState("");
   const [addContactSubmitting, setAddContactSubmitting] = useState(false);
   const importFileInputRef = useRef(null);
@@ -572,11 +574,17 @@ export default function ContactsPage() {
       const fd = new FormData();
       fd.append("file", importSelectedFile);
       if (listId) fd.append("listId", listId);
-      await uploadContactsFile(fd);
+      const { data } = await uploadContactsFile(fd);
       setPage(1);
       setShowImportModal(false);
       await load();
       window.dispatchEvent(new Event("lists:refresh"));
+      window.dispatchEvent(new Event("contacts:refresh"));
+      setImportResult({
+        inserted: Number(data?.inserted || data?.imported || 0),
+        skippedDuplicates: Number(data?.skippedDuplicates || 0),
+        skippedDuplicateEmails: Array.isArray(data?.skippedDuplicateEmails) ? data.skippedDuplicateEmails : [],
+      });
     } catch (e) {
       setImportModalError(e?.response?.data?.message || e?.message || "Import failed.");
     } finally {
@@ -1916,6 +1924,53 @@ export default function ContactsPage() {
                 disabled={importSubmitting || !importSelectedFile}
               >
                 {importSubmitting ? "Importing…" : "Run import"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {importResult ? (
+        <div className="modal-overlay import-modal-overlay" onClick={() => setImportResult(null)}>
+          <div
+            className="contact-modal import-modal import-result-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="contacts-import-result-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="import-result-head">
+              <span className="import-result-icon import-result-icon--success" aria-hidden>
+                <CheckCircle2 size={24} />
+              </span>
+              <div>
+                <p className="import-modal-eyebrow">Import result</p>
+                <h3 id="contacts-import-result-title">Import Completed Successfully</h3>
+              </div>
+            </div>
+            <div className="import-result-summary">
+              <div className="import-result-stat import-result-stat--success">
+                <CheckCircle2 size={18} aria-hidden />
+                <span><strong>{importResult.inserted}</strong> contacts imported</span>
+              </div>
+              <div className="import-result-stat import-result-stat--warning">
+                <AlertTriangle size={18} aria-hidden />
+                <span><strong>{importResult.skippedDuplicates}</strong> duplicate contacts skipped</span>
+              </div>
+            </div>
+            {importResult.skippedDuplicateEmails.length ? (
+              <div className="import-result-duplicates">
+                <strong>Skipped duplicates</strong>
+                <ul>
+                  {importResult.skippedDuplicateEmails.map((email, index) => (
+                    <li key={`${email}-${index}`}>{email}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <div className="import-modal-footer">
+              <button type="button" className="import-modal-btn-primary import-modal-btn-primary--gradient" onClick={() => setImportResult(null)}>
+                Done
               </button>
             </div>
           </div>

@@ -108,6 +108,21 @@ const attachContactToList = async (ownerId, contactId, listId) => {
   await Contact.updateOne({ _id: contactId, owner: ownerId }, { $addToSet: { lists: listId } });
 };
 
+const contactHasList = (contact, listId) => {
+  const target = String(listId || "");
+  return Array.isArray(contact?.lists) && contact.lists.some((id) => String(id) === target);
+};
+
+const contactHasAllLists = (contact, listIds) => listIds.every((listId) => contactHasList(contact, listId));
+
+const attachContactToMissingLists = async (ownerId, contact, listIds) => {
+  const missingListIds = listIds.filter((listId) => !contactHasList(contact, listId));
+  for (const listId of missingListIds) {
+    await attachContactToList(ownerId, contact._id, listId);
+  }
+  return missingListIds.length;
+};
+
 /** Parse first sheet of .xlsx / .xls / .csv buffer into { name, email, phone, companyName, fields } rows. */
 const parseSpreadsheetBufferToRows = (buffer) => {
   const wb = xlsx.read(buffer, { type: "buffer" });
@@ -143,6 +158,11 @@ const parseSpreadsheetBufferToRows = (buffer) => {
       };
     })
     .filter((x) => x.email);
+};
+
+const addSkippedDuplicateEmail = (emails, email) => {
+  const normalized = String(email || "").toLowerCase().trim();
+  if (normalized && !emails.includes(normalized)) emails.push(normalized);
 };
 
 const normalizeTemplateAttachments = (raw) => {
@@ -221,31 +241,47 @@ exports.uploadExcel = async (req, res) => {
   const importedCompanyCount = parsed.reduce((n, r) => (String(r.companyName || "").trim() ? n + 1 : n), 0);
   console.log("[contacts-import] uploadExcel detectedCompanyColumn=", detectedCompany, "companyValues=", importedCompanyCount, "rows=", parsed.length);
 
-  let count = 0;
+  let inserted = 0;
+  const skippedDuplicateEmails = [];
+  const seenEmails = new Set();
   for (const row of parsed) {
-    let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
-    if (contact) {
-      if (row.name) contact.name = row.name;
-      if (row.companyName) contact.companyName = row.companyName;
-      if (row.phone) contact.phone = row.phone;
-      Object.assign(contact.fields || {}, row.fields || {});
-      await contact.save();
-      if (list) await attachContactToList(req.user.id, contact._id, list._id);
-    } else {
-      contact = await Contact.create({
-        owner: req.user.id,
-        name: row.name,
-        companyName: row.companyName || "",
-        email: row.email,
-        phone: row.phone || "",
-        lists: list ? [list._id] : [],
-        fields: row.fields || {},
-      });
-      if (list) await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+    const email = String(row.email || "").toLowerCase().trim();
+    if (!email || seenEmails.has(email)) {
+      addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+      continue;
     }
-    count += 1;
+    seenEmails.add(email);
+
+    const existing = await Contact.findOne({ owner: req.user.id, email }).select("_id lists");
+    if (existing) {
+      if (!list || contactHasList(existing, list._id)) {
+        addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+        continue;
+      }
+      await attachContactToList(req.user.id, existing._id, list._id);
+      inserted += 1;
+      continue;
+    }
+
+    const contact = await Contact.create({
+      owner: req.user.id,
+      name: row.name,
+      companyName: row.companyName || "",
+      email,
+      phone: row.phone || "",
+      lists: list ? [list._id] : [],
+      fields: row.fields || {},
+    });
+    if (list) await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+    inserted += 1;
   }
-  res.status(201).json({ list: list || null, count });
+  res.status(201).json({
+    list: list || null,
+    count: parsed.length,
+    inserted,
+    skippedDuplicates: skippedDuplicateEmails.length,
+    skippedDuplicateEmails,
+  });
 };
 exports.uploadTemplateImage = async (req, res) => {
   if (!req.file?.buffer) return res.status(400).json({ message: "Image file is required" });
@@ -579,35 +615,47 @@ exports.bulkContacts = async (req, res) => {
     const importedCompanyCount = parsed.reduce((n, r) => (String(r.companyName || "").trim() ? n + 1 : n), 0);
     console.log("[contacts-import] bulkContacts detectedCompanyColumn=", detectedCompany, "companyValues=", importedCompanyCount, "rows=", parsed.length);
 
-    let processed = 0;
+    let inserted = 0;
+    const skippedDuplicateEmails = [];
+    const seenEmails = new Set();
     for (const row of parsed) {
-      let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
-      if (contact) {
-        if (row.name) contact.name = row.name;
-        if (row.companyName) contact.companyName = row.companyName;
-        if (row.phone) contact.phone = row.phone;
-        Object.assign(contact.fields || {}, row.fields || {});
-        await contact.save();
-        await attachContactToList(req.user.id, contact._id, list._id);
-      } else {
-        contact = await Contact.create({
-          owner: req.user.id,
-          name: row.name,
-          companyName: row.companyName || "",
-          email: row.email,
-          phone: row.phone || "",
-          lists: [list._id],
-          fields: row.fields || {},
-        });
-        await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+      const email = String(row.email || "").toLowerCase().trim();
+      if (!email || seenEmails.has(email)) {
+        addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+        continue;
       }
-      processed += 1;
+      seenEmails.add(email);
+
+      const existing = await Contact.findOne({ owner: req.user.id, email }).select("_id lists");
+      if (existing) {
+        if (contactHasList(existing, list._id)) {
+          addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+          continue;
+        }
+        await attachContactToList(req.user.id, existing._id, list._id);
+        inserted += 1;
+        continue;
+      }
+
+      const contact = await Contact.create({
+        owner: req.user.id,
+        name: row.name,
+        companyName: row.companyName || "",
+        email,
+        phone: row.phone || "",
+        lists: [list._id],
+        fields: row.fields || {},
+      });
+      await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+      inserted += 1;
     }
 
     return res.status(201).json({
       list,
       count: parsed.length,
-      inserted: processed,
+      inserted,
+      skippedDuplicates: skippedDuplicateEmails.length,
+      skippedDuplicateEmails,
     });
   } catch (error) {
     return res.status(500).json({ message: error.message || "Bulk import failed" });
@@ -645,26 +693,36 @@ exports.bulkImportToLists = async (req, res) => {
     );
 
     const savedIds = [];
+    const skippedDuplicateEmails = [];
+    const seenEmails = new Set();
     for (const row of parsedRows) {
-      let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
-      if (contact) {
-        if (row.name) contact.name = row.name;
-        if (row.companyName) contact.companyName = row.companyName;
-        if (row.phone) contact.phone = row.phone;
-        Object.assign(contact.fields || {}, row.fields || {});
-        await contact.save();
-      } else {
-        contact = await Contact.create({
-          owner: req.user.id,
-          name: row.name,
-          companyName: row.companyName || "",
-          email: row.email,
-          phone: row.phone || "",
-          lists: validListIds,
-          fields: row.fields || {},
-        });
+      const email = String(row.email || "").toLowerCase().trim();
+      if (!email || seenEmails.has(email)) {
+        addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+        continue;
+      }
+      seenEmails.add(email);
+
+      const existing = await Contact.findOne({ owner: req.user.id, email }).select("_id lists");
+      if (existing) {
+        if (contactHasAllLists(existing, validListIds)) {
+          addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+          continue;
+        }
+        await attachContactToMissingLists(req.user.id, existing, validListIds);
+        savedIds.push(existing._id);
+        continue;
       }
 
+      const contact = await Contact.create({
+        owner: req.user.id,
+        name: row.name,
+        companyName: row.companyName || "",
+        email,
+        phone: row.phone || "",
+        lists: validListIds,
+        fields: row.fields || {},
+      });
       savedIds.push(contact._id);
       for (const listId of validListIds) {
         await attachContactToList(req.user.id, contact._id, listId);
@@ -673,6 +731,8 @@ exports.bulkImportToLists = async (req, res) => {
 
     return res.status(201).json({
       imported: savedIds.length,
+      skippedDuplicates: skippedDuplicateEmails.length,
+      skippedDuplicateEmails,
       listIds: validListIds,
       message: "Contacts imported successfully",
     });
@@ -855,13 +915,29 @@ exports.sendCampaign = async (req, res) => {
   if (["processing", "sending"].includes(String(campaign.status))) {
     return res.json({ message: "Campaign is already processing", campaign });
   }
+  console.log("[campaign-send-diagnostic] send-request", {
+    at: new Date().toISOString(),
+    campaignId: String(campaign._id),
+    previousStatus: campaign.status,
+    owner: String(campaign.owner),
+  });
   campaign.status = "processing";
   await campaign.save();
+  console.log("[campaign-send-diagnostic] controller-status-set-processing", {
+    at: new Date().toISOString(),
+    campaignId: String(campaign._id),
+  });
   const result = await enqueueCampaign(campaign._id);
   if (result?.queued) {
     campaign.status = "processing";
     await campaign.save();
   }
+  console.log("[campaign-send-diagnostic] enqueue-result", {
+    at: new Date().toISOString(),
+    campaignId: String(campaign._id),
+    result,
+    responseStatus: 202,
+  });
   res.status(202).json({ message: "Campaign processing started", campaignId: campaign._id });
 };
 exports.getCampaigns = async (req, res) => {
@@ -913,12 +989,34 @@ exports.getCampaigns = async (req, res) => {
   for (const c of items) {
     if (!["processing", "sending"].includes(String(c.status))) continue;
     if (now - new Date(c.updatedAt).getTime() < 30_000) continue;
-    const [anySent, anyFailed] = await Promise.all([
+    const targetListIds = (Array.isArray(c.listIds) && c.listIds.length ? c.listIds : [c.listId])
+      .map((id) => id?._id || id)
+      .filter(Boolean);
+    const [anySent, anyFailed, sentCount, failedCount, totalLogs, totalRecipients] = await Promise.all([
       EmailLog.exists({ owner: req.user.id, campaignId: c._id, status: "sent" }).catch(() => null),
       EmailLog.exists({ owner: req.user.id, campaignId: c._id, status: "failed" }).catch(() => null),
+      EmailLog.countDocuments({ owner: req.user.id, campaignId: c._id, status: "sent" }).catch(() => 0),
+      EmailLog.countDocuments({ owner: req.user.id, campaignId: c._id, status: "failed" }).catch(() => 0),
+      EmailLog.countDocuments({ owner: req.user.id, campaignId: c._id }).catch(() => 0),
+      Contact.countDocuments({ owner: req.user.id, lists: { $in: targetListIds } }).catch(() => 0),
     ]);
     const nextStatus = anySent ? "completed" : anyFailed ? "failed" : null;
     if (!nextStatus) continue;
+    console.log("[campaign-send-diagnostic] getCampaigns-self-heal-status-update", {
+      at: new Date().toISOString(),
+      campaignId: String(c._id),
+      previousStatus: c.status,
+      nextStatus,
+      ageMs: now - new Date(c.updatedAt).getTime(),
+      totalRecipients,
+      totalLogs,
+      sentCount,
+      failedCount,
+      anySent: Boolean(anySent),
+      anyFailed: Boolean(anyFailed),
+      targetListIds: targetListIds.map((id) => String(id || "")),
+      note: "This status update happens while serving GET /api/campaigns, outside the queue worker.",
+    });
     c.status = nextStatus;
     await Campaign.updateOne({ _id: c._id, owner: req.user.id }, { $set: { status: nextStatus } }).catch(() => null);
   }
