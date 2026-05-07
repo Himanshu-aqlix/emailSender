@@ -179,7 +179,7 @@ const prettyStatus = (status) => {
   if (s === "deferred") return "Deferred";
   if (s === "error") return "Error";
   if (s === "completed") return "Completed";
-  if (s === "sending") return "Sending";
+  if (s === "processing" || s === "sending") return "Processing";
   if (s === "failed") return "Failed";
   return "Draft";
 };
@@ -557,7 +557,7 @@ export default function CampaignDetailPage() {
             <RefreshCw size={16} className={refreshing ? "campaign-refresh-spin" : ""} />
             {refreshing ? "Refreshing…" : "Refresh"}
           </button>
-          <span className={`status-pill ${campaign.status === "completed" ? "success" : campaign.status === "sending" ? "sending" : campaign.status === "failed" ? "failed" : "draft"}`}>
+          <span className={`status-pill ${campaign.status === "completed" ? "success" : campaign.status === "processing" || campaign.status === "sending" ? "processing" : campaign.status === "failed" ? "failed" : "draft"}`}>
             {prettyStatus(campaign.status)}
           </span>
         </div>

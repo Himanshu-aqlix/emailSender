@@ -73,7 +73,7 @@ const processCampaign = async (job) => {
   const template = await Template.findById(campaign.templateId);
   const targetListIds = Array.isArray(campaign.listIds) && campaign.listIds.length ? campaign.listIds : [campaign.listId];
   const contacts = await Contact.find({ owner: campaign.owner, lists: { $in: targetListIds } });
-  campaign.status = "sending";
+  campaign.status = "processing";
   await campaign.save();
   for (const c of contacts) {
     const recipientUser = await User.findOne({ email: c.email.toLowerCase() }).select("unsubscribed").lean().catch(() => null);
@@ -205,8 +205,13 @@ const enqueueCampaign = async (campaignId) => {
     await queue.add({ campaignId }, { attempts: 3, backoff: { type: "exponential", delay: 3000 } });
     return { queued: true };
   }
-  await processCampaign({ data: { campaignId } });
-  return { queued: false };
+  setImmediate(() => {
+    processCampaign({ data: { campaignId } }).catch(async (error) => {
+      console.error("[queue] Background campaign processing failed:", error?.message || error);
+      await Campaign.updateOne({ _id: campaignId }, { $set: { status: "failed" } }).catch(() => null);
+    });
+  });
+  return { queued: false, background: true };
 };
 
 module.exports = { enqueueCampaign };

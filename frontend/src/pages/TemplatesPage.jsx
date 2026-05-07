@@ -11,6 +11,7 @@ import {
 } from "../services/templateService";
 import TemplatePreview from "../components/TemplatePreview";
 import EmailEditor from "../components/EmailEditor";
+import { ButtonLoader, CardSkeleton } from "../components/Loaders";
 
 const defaultHtmlContent = "";
 const defaultTemplateName = "";
@@ -19,6 +20,7 @@ const defaultTemplateSubject = "";
 export default function TemplatesPage() {
   const completionDisposableRef = useRef(null);
   const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [activeId, setActiveId] = useState("");
   const [tab, setTab] = useState("wysiwyg");
   const [busy, setBusy] = useState(false);
@@ -88,8 +90,9 @@ export default function TemplatesPage() {
   };
 
   /** @param {string} [preferredTemplateId] — pass after save so we select the saved row (fixes stale closure with new templates). */
-  const load = (preferredTemplateId) =>
-    getTemplates().then((r) => {
+  const load = (preferredTemplateId, silent = false) => {
+    if (!silent) setLoading(true);
+    return getTemplates().then((r) => {
       const rows = Array.isArray(r.data) ? r.data : r.data?.items || r.data?.templates || [];
       setTemplates(rows);
       if (!rows.length) return;
@@ -102,7 +105,8 @@ export default function TemplatesPage() {
       setSubject(current.subject);
       setHtmlContent(current.html);
       setAttachments(Array.isArray(current.attachments) ? current.attachments : []);
-    });
+    }).finally(() => setLoading(false));
+  };
 
   useEffect(() => {
     load();
@@ -179,7 +183,7 @@ export default function TemplatesPage() {
       setName(saved.name?.trim() ?? payload.name);
       setSubject(saved.subject?.trim() ?? payload.subject);
       setAttachments(Array.isArray(saved.attachments) ? saved.attachments : attachments);
-      await load(saved._id);
+      await load(saved._id, true);
       setNotice("Template saved successfully.");
     } catch (e) {
       setError(e?.response?.data?.message || "Unable to save template.");
@@ -200,7 +204,7 @@ export default function TemplatesPage() {
       if (wasActive) onNew();
       setDeleteModal(null);
       setDeleteModalInput("");
-      await load();
+      await load(undefined, true);
       setNotice("Template deleted.");
     } catch (e) {
       setError(e?.response?.data?.message || "Unable to delete template.");
@@ -315,7 +319,7 @@ export default function TemplatesPage() {
               type="button"
               className="templates-list-add-btn"
               onClick={onNew}
-              disabled={busy}
+              disabled={busy || loading}
               title="Create new template"
               aria-label="Create new template"
             >
@@ -323,7 +327,9 @@ export default function TemplatesPage() {
             </button>
           </div>
           <div className="templates-list-body">
-            {templates.length ? (
+            {loading ? (
+              <CardSkeleton count={3} />
+            ) : templates.length ? (
               templates.map((t) => (
                 <div
                   key={t._id}
@@ -421,8 +427,8 @@ export default function TemplatesPage() {
               <button className="ghost-btn" onClick={onPickAttachment} disabled={busy}>
                 + Attachment
               </button>
-              <button type="button" className="templates-save-btn" onClick={save} disabled={busy}>
-                <Save size={14} /> {busy ? "Saving..." : "Save"}
+              <button type="button" className="templates-save-btn" onClick={save} disabled={busy || loading}>
+                {busy ? <ButtonLoader label="Saving template" /> : <><Save size={14} /> Save</>}
               </button>
             </div>
           </div>

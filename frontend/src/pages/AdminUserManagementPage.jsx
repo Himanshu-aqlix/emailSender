@@ -5,6 +5,7 @@ import { createAdminUser, getAdminUsers, updateAdminUser } from "../services/adm
 import { formatCreatedDateTime } from "../utils/formatDateTime";
 import { errorToast, messageFromAxios, successToast } from "../utils/toast";
 import { readStoredUser } from "../utils/userDisplay";
+import { ButtonLoader, CardSkeleton, PageLoader, TableSkeleton } from "../components/Loaders";
 
 const EMPTY_FORM = {
   email: "",
@@ -155,7 +156,11 @@ export default function AdminUserManagementPage() {
   };
 
   if (profileLoading) {
-    return <section className="admin-users-page"><div className="panel">Loading user management…</div></section>;
+    return (
+      <section className="admin-users-page">
+        <PageLoader title="Loading user management" subtitle="Checking your admin access..." />
+      </section>
+    );
   }
 
   if (!profile?.isAdmin) {
@@ -184,6 +189,9 @@ export default function AdminUserManagementPage() {
         </button>
       </div>
 
+      {loading ? (
+        <CardSkeleton count={3} />
+      ) : (
       <div className="admin-users-summary-grid">
         <div className="admin-users-summary-card">
           <div>
@@ -213,6 +221,7 @@ export default function AdminUserManagementPage() {
           </span>
         </div>
       </div>
+      )}
 
       <div className="admin-users-panel">
         <div className="admin-users-toolbar">
@@ -231,6 +240,9 @@ export default function AdminUserManagementPage() {
         </div>
 
         <div className="admin-users-table-wrap">
+          {loading ? (
+            <TableSkeleton rows={6} columns={5} />
+          ) : (
           <table className="contacts-table admin-users-table">
             <thead>
               <tr>
@@ -242,11 +254,7 @@ export default function AdminUserManagementPage() {
               </tr>
             </thead>
             <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan="5" className="admin-users-empty-cell">Loading users…</td>
-                </tr>
-              ) : filteredUsers.length ? (
+              {filteredUsers.length ? (
                 filteredUsers.map((user) => (
                   <tr key={user.id}>
                     <td>
@@ -276,6 +284,7 @@ export default function AdminUserManagementPage() {
               )}
             </tbody>
           </table>
+          )}
         </div>
       </div>
 
@@ -367,7 +376,7 @@ export default function AdminUserManagementPage() {
                 Cancel
               </button>
               <button type="button" className="import-modal-btn-primary import-modal-btn-primary--gradient" onClick={submitForm} disabled={saving}>
-                {saving ? "Saving…" : editingUser ? "Save Changes" : "Create User"}
+                {saving ? <ButtonLoader label="Saving user" /> : editingUser ? "Save Changes" : "Create User"}
               </button>
             </div>
           </div>

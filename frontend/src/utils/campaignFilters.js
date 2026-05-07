@@ -20,7 +20,7 @@ export function getCampaignSortLabel(sort) {
 
 export function getStatusChipLabel(status) {
   if (!status) return "";
-  const m = { draft: "Draft", sending: "Sending", completed: "Completed" };
+  const m = { processing: "Processing", sending: "Processing", completed: "Completed", failed: "Failed" };
   return m[status] || status;
 }
 
@@ -69,7 +69,7 @@ export function buildCampaignsQueryParams({ page, limit, q, filters }) {
   const qTrim = q != null ? String(q).trim() : "";
   if (qTrim) params.q = qTrim;
   const f = filters || DEFAULT_CAMPAIGN_FILTERS;
-  if (f.status && ["draft", "sending", "completed"].includes(f.status)) {
+  if (f.status && ["processing", "sending", "completed", "failed"].includes(f.status)) {
     params.status = f.status;
   }
   const { dateFrom, dateTo } = resolveCampaignDateRangeForApi(f);
@@ -118,7 +118,14 @@ export function filterCampaigns(campaigns, filters) {
   const toMs = dateTo ? new Date(dateTo).getTime() : null;
 
   let out = list.filter((c) => {
-    if (f.status && c.status !== f.status) return false;
+    if (f.status) {
+      const status = String(c.status || "").toLowerCase();
+      if (f.status === "processing") {
+        if (!["processing", "sending"].includes(status)) return false;
+      } else if (status !== f.status) {
+        return false;
+      }
+    }
     const created = c.createdAt ? new Date(c.createdAt).getTime() : 0;
     if (fromMs != null && created < fromMs) return false;
     if (toMs != null && created > toMs) return false;

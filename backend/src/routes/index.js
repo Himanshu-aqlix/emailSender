@@ -21,6 +21,7 @@ router.patch("/api/admin/users/:id/status", auth, adminOnly, c.toggleAdminUserSt
 router.post("/api/upload", auth, upload.single("file"), c.uploadExcel);
 router.post("/api/uploads/image", auth, upload.single("file"), c.uploadTemplateImage);
 router.post("/api/uploads/attachment", auth, upload.single("file"), c.uploadTemplateAttachment);
+router.get("/api/contact-owners", auth, c.getContactOwners);
 router.get("/api/contacts", auth, c.getContacts);
 router.post("/api/contacts", auth, c.addSingleContact);
 router.post("/api/contacts/sample-data", auth, c.addSampleContacts);

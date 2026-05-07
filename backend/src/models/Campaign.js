@@ -8,7 +8,7 @@ const CampaignSchema = new mongoose.Schema(
     listId: { type: mongoose.Schema.Types.ObjectId, ref: "List", required: true },
     // Multi-list support. Keep listId for backward compatibility with existing data/queries.
     listIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "List" }],
-    status: { type: String, enum: ["draft", "sending", "completed", "failed"], default: "draft" },
+    status: { type: String, enum: ["draft", "processing", "sending", "completed", "failed"], default: "draft" },
   },
   { timestamps: true }
 );

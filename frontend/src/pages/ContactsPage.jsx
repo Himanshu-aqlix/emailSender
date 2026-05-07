@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import {
   AlertTriangle,
   ArrowUpFromLine,
+  Check,
   ChevronDown,
   Download,
   FileSpreadsheet,
@@ -18,6 +19,7 @@ import {
   bulkAssignContactsToLists,
   createContact,
   deleteContact,
+  getContactOwners,
   getContacts,
   updateContact,
   uploadContactsFile,
@@ -32,14 +34,36 @@ import {
   getSortLabel,
 } from "../utils/contactsFilters";
 import { errorToast, messageFromAxios, successToast } from "../utils/toast";
+import { formatDisplayName, initialsFromEmail, readStoredUser } from "../utils/userDisplay";
 import ContactsFilter from "../components/ContactsFilter";
+import { ButtonLoader, TableSkeleton } from "../components/Loaders";
 
 const CONTACTS_MENU_MIN_WIDTH = 220;
+const CONTACT_SCOPE_MENU_MIN_WIDTH = 280;
 const CONTACT_PAGE_LIMITS = [10, 25, 50, 100];
+
+const buildContactScopeOption = (user, currentUserId) => {
+  const id = String(user?.id || user?._id || "");
+  const email = String(user?.email || "").trim().toLowerCase();
+  const isCurrentUser = !!currentUserId && id === currentUserId;
+  return {
+    id,
+    email,
+    scope: isCurrentUser ? "mine" : "user",
+    label: isCurrentUser ? "My Contacts" : formatDisplayName(email),
+    description: isCurrentUser ? "Only contacts owned by you" : email,
+  };
+};
 
 export default function ContactsPage() {
   const [contacts, setContacts] = useState([]);
   const [lists, setLists] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [profile] = useState(readStoredUser);
+  const currentUserId = String(profile?.id || "");
+  const [contactOwners, setContactOwners] = useState([]);
+  const [contactVisibility, setContactVisibility] = useState("mine");
+  const [selectedOwnerId, setSelectedOwnerId] = useState("");
   const [query, setQuery] = useState("");
   const [appliedFilters, setAppliedFilters] = useState(() => ({ ...DEFAULT_CONTACT_FILTERS }));
   const [filterDraft, setFilterDraft] = useState(() => ({ ...DEFAULT_CONTACT_FILTERS }));
@@ -49,6 +73,7 @@ export default function ContactsPage() {
   /** Total contacts for this account (ignores search `q`). Used to distinguish “no data” vs “no search hits”. */
   const [accountContactTotal, setAccountContactTotal] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
+  const [showContactScopeMenu, setShowContactScopeMenu] = useState(false);
   const [showBulkUpdate, setShowBulkUpdate] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -58,6 +83,8 @@ export default function ContactsPage() {
   const [openContactMenuRowId, setOpenContactMenuRowId] = useState(null);
   const [contactMenuCoords, setContactMenuCoords] = useState(null);
   const contactsMenuTriggerRef = useRef(null);
+  const contactScopeTriggerRef = useRef(null);
+  const [contactScopeMenuCoords, setContactScopeMenuCoords] = useState(null);
 
   const [editTarget, setEditTarget] = useState(null);
   const [editForm, setEditForm] = useState({ name: "", email: "", companyName: "", phone: "" });
@@ -80,6 +107,7 @@ export default function ContactsPage() {
   listsRef.current = lists;
   const bulkUpdateWrapRef = useRef(null);
   const filterWrapRef = useRef(null);
+  const contactScopeWrapRef = useRef(null);
   const [selectedContactIds, setSelectedContactIds] = useState([]);
   const [bulkSelectedLists, setBulkSelectedLists] = useState([]);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
@@ -98,43 +126,98 @@ export default function ContactsPage() {
         datePreset: appliedFilters.datePreset,
         customDateFrom: appliedFilters.customDateFrom,
         customDateTo: appliedFilters.customDateTo,
-      }),
+    }),
     [appliedFilters]
   );
 
+  const contactScopeOptions = useMemo(() => {
+    const allOption = {
+      id: "",
+      email: "",
+      scope: "all",
+      label: "All Contacts",
+      description: "See contacts from the shared workspace",
+    };
+    const mapped = contactOwners
+      .map((user) => buildContactScopeOption(user, currentUserId))
+      .filter((option) => option.id && option.email);
+    const mineOption =
+      mapped.find((option) => option.scope === "mine") || {
+        id: currentUserId,
+        email: String(profile?.email || "").trim().toLowerCase(),
+        scope: "mine",
+        label: "My Contacts",
+        description: "Only contacts owned by you",
+      };
+    const teammateOptions = mapped
+      .filter((option) => option.scope === "user")
+      .sort((a, b) => a.label.localeCompare(b.label));
+    return [mineOption, allOption, ...teammateOptions];
+  }, [contactOwners, currentUserId, profile?.email]);
+
+  const selectedContactScope = useMemo(() => {
+    if (contactVisibility === "all") {
+      return contactScopeOptions.find((option) => option.scope === "all") || contactScopeOptions[0];
+    }
+    if (contactVisibility === "user") {
+      return (
+        contactScopeOptions.find((option) => option.scope === "user" && option.id === selectedOwnerId) ||
+        contactScopeOptions[0]
+      );
+    }
+    return contactScopeOptions.find((option) => option.scope === "mine") || contactScopeOptions[0];
+  }, [contactScopeOptions, contactVisibility, selectedOwnerId]);
+
+  const dropdownContactScopeOptions = useMemo(
+    () => contactScopeOptions.filter((option) => option.scope !== "all"),
+    [contactScopeOptions]
+  );
+
   const load = async () => {
-    const params = buildContactsQueryParams({ page, limit, q: query, filters: appliedFilters });
-    const qTrim = query.trim();
+    setLoading(true);
+    const params = buildContactsQueryParams({
+      page,
+      limit,
+      q: query,
+      filters: appliedFilters,
+      visibility: contactVisibility,
+      ownerId: selectedOwnerId,
+    });
 
     const countParams = new URLSearchParams();
     countParams.set("page", "1");
     countParams.set("limit", "1");
+    countParams.set("visibility", "all");
 
-    const promises = [getContacts(params.toString()), getLists()];
-    if (qTrim) {
-      promises.push(getContacts(countParams.toString()));
-    }
+    const promises = [getContacts(params.toString()), getLists(), getContactOwners(), getContacts(countParams.toString())];
 
-    const results = await Promise.all(promises);
-    const contactsRes = results[0];
-    const listsRes = results[1];
-    const data = contactsRes.data || {};
-    setContacts(data.items || []);
-    setPagination(data.pagination || { page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false });
-    setLists(listsRes.data || []);
-
-    if (qTrim) {
-      const countRes = results[2];
+    try {
+      const results = await Promise.all(promises);
+      const contactsRes = results[0];
+      const listsRes = results[1];
+      const ownersRes = results[2];
+      const countRes = results[3];
+      const data = contactsRes.data || {};
+      setContacts(data.items || []);
+      setPagination(data.pagination || { page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false });
+      setLists(listsRes.data || []);
+      setContactOwners(Array.isArray(ownersRes.data) ? ownersRes.data : []);
       const raw = countRes?.data?.pagination?.total;
       setAccountContactTotal(typeof raw === "number" ? raw : 0);
-    } else {
-      const raw = data.pagination?.total;
-      setAccountContactTotal(typeof raw === "number" ? raw : 0);
+    } catch (e) {
+      setContacts([]);
+      setPagination({ page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false });
+      setLists([]);
+      setContactOwners([]);
+      setAccountContactTotal(0);
+      errorToast(messageFromAxios(e, "Could not load contacts"));
+    } finally {
+      setLoading(false);
     }
   };
   useEffect(() => {
     load();
-  }, [page, limit, query, filtersSignature]);
+  }, [page, limit, query, filtersSignature, contactVisibility, selectedOwnerId]);
   useEffect(() => {
     const onRefresh = () => {
       setPage(1);
@@ -283,6 +366,28 @@ export default function ContactsPage() {
   }, [importMenuOpen]);
 
   useEffect(() => {
+    if (!showContactScopeMenu) return undefined;
+    const onDown = (e) => {
+      if (
+        contactScopeWrapRef.current?.contains(e.target) ||
+        e.target.closest?.("[data-contact-scope-dropdown-portal]")
+      ) {
+        return;
+      }
+      setShowContactScopeMenu(false);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") setShowContactScopeMenu(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [showContactScopeMenu]);
+
+  useEffect(() => {
     if (!bulkToast) return undefined;
     const t = setTimeout(() => setBulkToast(""), 4000);
     return () => clearTimeout(t);
@@ -315,6 +420,34 @@ export default function ContactsPage() {
       window.removeEventListener("resize", layoutMenu);
     };
   }, [openContactMenuRowId]);
+
+  useLayoutEffect(() => {
+    if (!showContactScopeMenu) {
+      setContactScopeMenuCoords(null);
+      return undefined;
+    }
+    const layoutMenu = () => {
+      const trigger = contactScopeTriggerRef.current;
+      if (!trigger?.getBoundingClientRect) return;
+      const rect = trigger.getBoundingClientRect();
+      const gutter = 10;
+      let left = rect.left;
+      left = Math.max(gutter, Math.min(left, window.innerWidth - CONTACT_SCOPE_MENU_MIN_WIDTH - gutter));
+      let top = rect.bottom + 8;
+      const estHeight = 320;
+      if (top + estHeight > window.innerHeight - gutter) {
+        top = Math.max(gutter, rect.top - estHeight - 8);
+      }
+      setContactScopeMenuCoords({ top, left });
+    };
+    layoutMenu();
+    window.addEventListener("scroll", layoutMenu, true);
+    window.addEventListener("resize", layoutMenu);
+    return () => {
+      window.removeEventListener("scroll", layoutMenu, true);
+      window.removeEventListener("resize", layoutMenu);
+    };
+  }, [showContactScopeMenu]);
 
   useEffect(() => {
     if (!openContactMenuRowId) return undefined;
@@ -359,6 +492,25 @@ export default function ContactsPage() {
       setBulkError("");
     }
   }, [selectedContactIds.length]);
+
+  useEffect(() => {
+    setSelectedContactIds([]);
+    setShowBulkUpdate(false);
+    setBulkSelectedLists([]);
+  }, [contactVisibility, selectedOwnerId]);
+
+  useEffect(() => {
+    if (contactVisibility !== "user") return;
+    if (!selectedOwnerId) {
+      setContactVisibility("mine");
+      return;
+    }
+    const hasSelectedOwner = contactScopeOptions.some((option) => option.scope === "user" && option.id === selectedOwnerId);
+    if (!hasSelectedOwner) {
+      setContactVisibility("mine");
+      setSelectedOwnerId("");
+    }
+  }, [contactScopeOptions, contactVisibility, selectedOwnerId]);
 
   const openImportModal = () => {
     setShowImportModal(true);
@@ -433,13 +585,21 @@ export default function ContactsPage() {
   };
 
   const displayRows = contacts;
+  const isOwnedByCurrentUser = useCallback(
+    (contact) => String(contact?.owner?._id || contact?.owner?.id || contact?.owner || "") === currentUserId,
+    [currentUserId]
+  );
   const hasAnyContacts = accountContactTotal > 0;
   const searchTrim = query.trim();
   const hasActiveFiltersApplied = countActiveFilterKeys(appliedFilters) > 0;
   const isSearchWithNoHits = hasAnyContacts && !displayRows.length && searchTrim.length > 0;
   const isFilterEmptyState = hasAnyContacts && !displayRows.length && !searchTrim.length && hasActiveFiltersApplied;
-  const displayedIds = useMemo(() => displayRows.map((c) => String(c._id)), [displayRows]);
-  const allDisplayedSelected = displayedIds.length > 0 && displayedIds.every((id) => selectedContactIds.includes(id));
+  const selectableDisplayedIds = useMemo(
+    () => displayRows.filter((c) => isOwnedByCurrentUser(c)).map((c) => String(c._id)),
+    [displayRows, isOwnedByCurrentUser]
+  );
+  const allDisplayedSelected =
+    selectableDisplayedIds.length > 0 && selectableDisplayedIds.every((id) => selectedContactIds.includes(id));
 
   const activeFilterChips = useMemo(() => {
     const out = [];
@@ -612,6 +772,8 @@ export default function ContactsPage() {
   };
 
   const toggleContactSelection = (contactId) => {
+    const target = displayRows.find((contact) => String(contact._id) === String(contactId));
+    if (!isOwnedByCurrentUser(target)) return;
     setSelectedContactIds((prev) => {
       const id = String(contactId);
       return prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
@@ -621,9 +783,9 @@ export default function ContactsPage() {
   const toggleAllDisplayed = () => {
     setSelectedContactIds((prev) => {
       if (allDisplayedSelected) {
-        return prev.filter((id) => !displayedIds.includes(id));
+        return prev.filter((id) => !selectableDisplayedIds.includes(id));
       }
-      return Array.from(new Set([...prev, ...displayedIds]));
+      return Array.from(new Set([...prev, ...selectableDisplayedIds]));
     });
   };
 
@@ -660,6 +822,14 @@ export default function ContactsPage() {
       .map((l) => (typeof l === "object" ? l?.name : ""))
       .filter(Boolean)
       .join("; ");
+  };
+
+  const applyContactScopeOption = (option) => {
+    const nextScope = option?.scope || "mine";
+    setContactVisibility(nextScope);
+    setSelectedOwnerId(nextScope === "user" ? String(option?.id || "") : "");
+    setPage(1);
+    setShowContactScopeMenu(false);
   };
 
   const exportCsv = () => {
@@ -722,6 +892,106 @@ export default function ContactsPage() {
         </div>
       </div>
 
+      <div className="contacts-scope-row">
+        <div className="toolbar-dropdown-anchor contacts-scope-anchor" ref={contactScopeWrapRef}>
+          <div className="contacts-scope-controls">
+            <button
+              type="button"
+              className={`ghost-btn contacts-scope-trigger contacts-scope-trigger--all${contactVisibility === "all" ? " is-selected" : ""}`}
+              onClick={() =>
+                applyContactScopeOption({
+                  scope: "all",
+                  id: "",
+                  label: "All Contacts",
+                  description: "See contacts from the shared workspace",
+                })
+              }
+            >
+              All Contacts
+            </button>
+          <button
+            ref={contactScopeTriggerRef}
+            type="button"
+            className={`ghost-btn contacts-scope-trigger contacts-scope-trigger--dropdown${
+              contactVisibility !== "all" ? " is-selected" : ""
+            }`}
+            aria-expanded={showContactScopeMenu}
+            aria-haspopup="menu"
+            onClick={() => {
+              setShowFilters(false);
+              setShowBulkUpdate(false);
+              setShowContactScopeMenu((prev) => !prev);
+            }}
+          >
+            <Users size={14} aria-hidden />
+            {contactVisibility === "all" ? "My Contacts" : selectedContactScope?.label || "My Contacts"}
+            <ChevronDown size={14} aria-hidden className={`contacts-scope-trigger-chevron${showContactScopeMenu ? " is-open" : ""}`} />
+          </button>
+          </div>
+          <div className="contacts-scope-meta">
+            <strong>Contact scope</strong>
+            <span>{selectedContactScope?.description || "Only contacts owned by you"}</span>
+          </div>
+        </div>
+      </div>
+      {showContactScopeMenu && contactScopeMenuCoords
+        ? createPortal(
+            <div
+              data-contact-scope-dropdown-portal
+              className="contacts-scope-dropdown"
+              role="menu"
+              aria-label="Contact scope options"
+              style={{
+                position: "fixed",
+                top: contactScopeMenuCoords.top,
+                left: contactScopeMenuCoords.left,
+                minWidth: CONTACT_SCOPE_MENU_MIN_WIDTH,
+                zIndex: 10070,
+              }}
+            >
+              <div className="contacts-scope-dropdown-head">
+                <strong>Choose Contact Scope</strong>
+                <span>Switch between your contacts and a specific teammate.</span>
+              </div>
+              <div className="contacts-scope-dropdown-list">
+                {dropdownContactScopeOptions.map((option) => {
+                  const isSelected =
+                    option.scope === contactVisibility &&
+                    (option.scope !== "user" || option.id === selectedOwnerId);
+                  const avatarText = option.scope === "mine" ? "MC" : initialsFromEmail(option.email || option.label || "");
+                  return (
+                    <button
+                      key={`${option.scope}-${option.id || "all"}`}
+                      type="button"
+                      className={`contacts-scope-option${isSelected ? " is-selected" : ""}`}
+                      role="menuitemradio"
+                      aria-checked={isSelected}
+                      onClick={() => applyContactScopeOption(option)}
+                    >
+                      <span
+                        className={`contacts-scope-option-avatar${isSelected ? " is-selected" : ""}`}
+                        aria-hidden
+                      >
+                        {avatarText}
+                      </span>
+                      <span className="contacts-scope-option-copy">
+                        <strong>{option.label}</strong>
+                        <span>{option.description}</span>
+                      </span>
+                      {isSelected ? (
+                        <span className="contacts-scope-option-check" aria-hidden>
+                          <Check size={18} strokeWidth={2.4} />
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+
       {selectedContactIds.length ? (
         <div className="contacts-bulk-row">
           <div className="toolbar-dropdown-anchor" ref={bulkUpdateWrapRef}>
@@ -748,7 +1018,9 @@ export default function ContactsPage() {
                 <label>Select Lists</label>
                 <p className="bulk-update-sub">Choose one or more lists. Selected contacts are added (not replaced).</p>
                 <div className="filters-list-select">
-                  {!lists.length ? (
+                  {loading ? (
+                    <p className="bulk-update-empty-lists muted"><ButtonLoader label="Loading lists" /></p>
+                  ) : !lists.length ? (
                     <p className="bulk-update-empty-lists muted">No lists yet. Create a list first.</p>
                   ) : (
                     lists.map((l) => {
@@ -790,7 +1062,15 @@ export default function ContactsPage() {
       {bulkError ? <p className="auth-error">{bulkError}</p> : null}
       {bulkNotice ? <p className="helper">{bulkNotice}</p> : null}
 
-      {hasAnyContacts ? (
+      {loading ? (
+        <div className="contacts-table-wrap">
+          <div className="contacts-toolbar">
+            <span className="skeleton-line skeleton-line--medium" />
+            <span className="skeleton-line skeleton-line--short" />
+          </div>
+          <TableSkeleton rows={8} columns={8} showAvatar />
+        </div>
+      ) : hasAnyContacts ? (
         <div className="contacts-table-wrap">
           <div className="contacts-toolbar">
             <input
@@ -853,7 +1133,13 @@ export default function ContactsPage() {
             <thead>
               <tr>
                 <th>
-                  <input type="checkbox" checked={allDisplayedSelected} onChange={toggleAllDisplayed} />
+                  <input
+                    type="checkbox"
+                    checked={allDisplayedSelected}
+                    onChange={toggleAllDisplayed}
+                    disabled={!selectableDisplayedIds.length}
+                    title={selectableDisplayedIds.length ? "Select your contacts on this page" : "No editable contacts in this view"}
+                  />
                 </th>
                 <th>NAME</th>
                 <th>EMAIL</th>
@@ -867,13 +1153,16 @@ export default function ContactsPage() {
             <tbody>
               {displayRows.map((c) => {
                 const menuOpen = String(openContactMenuRowId) === String(c._id);
+                const canManageContact = isOwnedByCurrentUser(c);
                 return (
                   <tr key={c._id}>
                     <td>
                       <input
                         type="checkbox"
+                        disabled={!canManageContact}
                         checked={selectedContactIds.includes(String(c._id))}
                         onChange={() => toggleContactSelection(c._id)}
+                        title={canManageContact ? "Select contact" : "Only the owner can update this contact"}
                       />
                     </td>
                     <td className="name-cell">{c.name || "Unknown"}</td>
@@ -895,9 +1184,11 @@ export default function ContactsPage() {
                         <button
                           type="button"
                           className="contact-row-actions-trigger"
+                          disabled={!canManageContact}
                           aria-expanded={menuOpen}
                           aria-haspopup="menu"
-                          aria-label="Contact actions"
+                          aria-label={canManageContact ? "Contact actions" : "Read-only contact"}
+                          title={canManageContact ? "Manage contact" : "Only the owner can edit or delete this contact"}
                           onClick={(e) => {
                             if (!menuOpen) contactsMenuTriggerRef.current = e.currentTarget;
                             setOpenContactMenuRowId(menuOpen ? null : c._id);

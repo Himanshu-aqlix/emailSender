@@ -25,6 +25,7 @@ import {
 import { getListById } from "../services/listService";
 import { formatCreatedDateTime } from "../utils/formatDateTime";
 import { errorToast, messageFromAxios, successToast } from "../utils/toast";
+import { TableSkeleton } from "../components/Loaders";
 
 const LIST_CONTACT_MENU_MIN_WIDTH = 236;
 
@@ -167,11 +168,6 @@ export default function ListDetailPage() {
   const openRemoveFromMenu = (c) => {
     closeContactMenu();
     setRemoveTarget(c);
-  };
-
-  const openDeleteFromMenu = (c) => {
-    closeContactMenu();
-    setDeleteTarget(c);
   };
 
   const emailValid = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || "").trim());
@@ -359,7 +355,18 @@ export default function ListDetailPage() {
         </div>
       </div>
 
-      {contacts.length ? (
+      {loading ? (
+        <div className="contacts-table-wrap list-detail-table-wrap">
+          <div className="list-detail-toolbar">
+            <div className="list-detail-toolbar-left">
+              <span className="skeleton-line skeleton-line--short" />
+              <span className="skeleton-line skeleton-line--short" />
+            </div>
+            <span className="skeleton-line skeleton-line--short" />
+          </div>
+          <TableSkeleton rows={8} columns={7} showAvatar />
+        </div>
+      ) : contacts.length ? (
         <div className="contacts-table-wrap list-detail-table-wrap">
           <div className="list-detail-toolbar">
             <div className="list-detail-toolbar-left">
@@ -461,20 +468,6 @@ export default function ListDetailPage() {
                 type="button"
                 className="contact-row-actions-item"
                 role="menuitem"
-                onClick={() => openEditFromMenu(menuRowContact)}
-              >
-                <span className="contact-row-actions-item__icon contact-row-actions-item__icon--primary" aria-hidden>
-                  <Pencil size={16} strokeWidth={2} />
-                </span>
-                <span className="contact-row-actions-item__text">
-                  <span className="contact-row-actions-item__title">Edit contact</span>
-                  <span className="contact-row-actions-item__hint">Name, email, phone</span>
-                </span>
-              </button>
-              <button
-                type="button"
-                className="contact-row-actions-item"
-                role="menuitem"
                 onClick={() => openRemoveFromMenu(menuRowContact)}
               >
                 <span className="contact-row-actions-item__icon contact-row-actions-item__icon--neutral" aria-hidden>
@@ -485,12 +478,27 @@ export default function ListDetailPage() {
                   <span className="contact-row-actions-item__hint">Keeps contact in account</span>
                 </span>
               </button>
+              <button
+                type="button"
+                className="contact-row-actions-item"
+                role="menuitem"
+                onClick={() => openEditFromMenu(menuRowContact)}
+              >
+                <span className="contact-row-actions-item__icon contact-row-actions-item__icon--primary" aria-hidden>
+                  <Pencil size={16} strokeWidth={2} />
+                </span>
+                <span className="contact-row-actions-item__text">
+                  <span className="contact-row-actions-item__title">Edit contact</span>
+                  <span className="contact-row-actions-item__hint">Name, email, phone</span>
+                </span>
+              </button>
               <div className="contact-row-actions-divider" role="separator" />
               <button
                 type="button"
-                className="contact-row-actions-item contact-row-actions-item--danger"
+                className="contact-row-actions-item contact-row-actions-item--danger contact-row-actions-item--disabled"
                 role="menuitem"
-                onClick={() => openDeleteFromMenu(menuRowContact)}
+                aria-disabled="true"
+                disabled
               >
                 <span className="contact-row-actions-item__icon contact-row-actions-item__icon--danger" aria-hidden>
                   <Trash2 size={16} strokeWidth={2} />

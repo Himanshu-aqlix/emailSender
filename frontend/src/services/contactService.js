@@ -3,6 +3,8 @@ import api from "../utils/api";
 export const getContacts = (queryString = "") =>
   api.get(`/api/contacts${queryString ? `?${queryString}` : ""}`);
 
+export const getContactOwners = () => api.get("/api/contact-owners");
+
 export const createContact = (payload) => api.post("/api/contacts", payload);
 
 export const bulkContacts = (formData) => api.post("/api/contacts/bulk", formData);

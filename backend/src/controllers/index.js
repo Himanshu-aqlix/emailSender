@@ -298,7 +298,17 @@ exports.getContacts = async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 10000);
   const skip = (page - 1) * limit;
 
-  const filter = { owner: req.user.id };
+  const visibility = String(req.query.visibility || "mine").trim().toLowerCase();
+  const ownerIdRaw = String(req.query.ownerId || "").trim();
+  const filter = {};
+
+  if (visibility === "all") {
+    // Shared workspace view: no owner restriction.
+  } else if (visibility === "user" && mongoose.Types.ObjectId.isValid(ownerIdRaw)) {
+    filter.owner = ownerIdRaw;
+  } else {
+    filter.owner = req.user.id;
+  }
 
   const listIdsParam = String(req.query.listIds || "").trim();
   if (listIdsParam && listIdsParam !== "all") {
@@ -351,7 +361,7 @@ exports.getContacts = async (req, res) => {
   else if (sortKey === "newest") sort = { createdAt: -1 };
 
   const [items, total] = await Promise.all([
-    Contact.find(filter).populate("lists", "name").sort(sort).skip(skip).limit(limit),
+    Contact.find(filter).populate("lists", "name").populate("owner", "email role isActive createdAt updatedAt").sort(sort).skip(skip).limit(limit),
     Contact.countDocuments(filter),
   ]);
 
@@ -366,6 +376,17 @@ exports.getContacts = async (req, res) => {
       hasPrevPage: page > 1,
     },
   });
+};
+exports.getContactOwners = async (req, res) => {
+  try {
+    const users = await User.find({ isActive: true })
+      .select("email role isActive createdAt updatedAt")
+      .sort({ email: 1 })
+      .lean();
+    return res.json(users.map((user) => toSafeUser(user)));
+  } catch {
+    return res.status(500).json({ message: "Internal server error" });
+  }
 };
 exports.getListById = async (req, res) => {
   const list = await List.findOne({ _id: req.params.id, owner: req.user.id }).populate({
@@ -829,20 +850,19 @@ exports.createCampaign = async (req, res) => {
   res.status(201).json(c);
 };
 exports.sendCampaign = async (req, res) => {
-  const campaign = await Campaign.findById(req.body.campaignId);
+  const campaign = await Campaign.findOne({ _id: req.body.campaignId, owner: req.user.id });
   if (!campaign) return res.status(404).json({ message: "Campaign not found" });
-  // Mark as sending before enqueueing. In direct mode the worker may complete immediately,
-  // and setting `sending` afterwards would overwrite the final `completed/failed` status.
-  campaign.status = "sending";
+  if (["processing", "sending"].includes(String(campaign.status))) {
+    return res.json({ message: "Campaign is already processing", campaign });
+  }
+  campaign.status = "processing";
   await campaign.save();
   const result = await enqueueCampaign(campaign._id);
-  // If queue is disabled (direct mode), the campaign status will already be updated
-  // by the worker to completed/failed. Only force "sending" when actually queued.
   if (result?.queued) {
-    campaign.status = "sending";
+    campaign.status = "processing";
     await campaign.save();
   }
-  res.json({ message: result.queued ? "Campaign queued" : "Campaign sent immediately (queue disabled)" });
+  res.status(202).json({ message: "Campaign processing started", campaignId: campaign._id });
 };
 exports.getCampaigns = async (req, res) => {
   const page = Math.max(parseInt(req.query.page || "1", 10), 1);
@@ -850,7 +870,9 @@ exports.getCampaigns = async (req, res) => {
   const skip = (page - 1) * limit;
   const filter = { owner: req.user.id };
   const status = req.query.status;
-  if (status && ["draft", "sending", "completed", "failed"].includes(status)) filter.status = status;
+  if (status && ["draft", "processing", "sending", "completed", "failed"].includes(status)) {
+    filter.status = status === "processing" ? { $in: ["processing", "sending"] } : status;
+  }
   if (req.query.q) {
     const q = String(req.query.q).trim();
     filter.name = { $regex: q, $options: "i" };
@@ -885,11 +907,11 @@ exports.getCampaigns = async (req, res) => {
     Campaign.countDocuments(filter),
   ]);
 
-  // Self-heal old "sending" campaigns (e.g. previously overwritten in direct mode).
+  // Self-heal old processing/sending campaigns (e.g. previously interrupted workers).
   // This does not change the send flow; it just aligns campaign status with existing logs.
   const now = Date.now();
   for (const c of items) {
-    if (c.status !== "sending") continue;
+    if (!["processing", "sending"].includes(String(c.status))) continue;
     if (now - new Date(c.updatedAt).getTime() < 30_000) continue;
     const [anySent, anyFailed] = await Promise.all([
       EmailLog.exists({ owner: req.user.id, campaignId: c._id, status: "sent" }).catch(() => null),

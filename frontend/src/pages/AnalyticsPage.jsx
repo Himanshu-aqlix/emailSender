@@ -5,30 +5,39 @@ import { MailOpen } from "lucide-react";
 import { getLogs } from "../services/logService";
 import { getStats } from "../services/statsService";
 import { getBrevoEvents } from "../services/brevoTrackingService";
+import { CardSkeleton, TableSkeleton } from "../components/Loaders";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
 export default function AnalyticsPage() {
   const [logs, setLogs] = useState([]);
   const [stats, setStats] = useState({ totalSent: 0, opened: 0, clicked: 0, failed: 0 });
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
-    Promise.all([getLogs(), getStats(), getBrevoEvents({ limit: 100, days: 30 })]).then(([logsRes, statsRes, brevoRes]) => {
-      setLogs(logsRes.data || []);
-      const brevo = brevoRes?.data;
-      const events = brevo?.events || brevo?.events?.items || brevo?.items || brevo?.data || [];
-      const list = Array.isArray(events) ? events : [];
-      const delivered = list.filter((e) => String(e.event || "").toLowerCase() === "delivered").length;
-      const opened = list.filter((e) => String(e.event || "").toLowerCase() === "opened").length;
-      const clicked = list.filter((e) => String(e.event || "").toLowerCase() === "click").length;
-      const bounced = list.filter((e) => String(e.event || "").toLowerCase() === "bounced").length;
-      const fallbackStats = statsRes.data || { totalSent: 0, opened: 0, clicked: 0, failed: 0 };
-      setStats({
-        totalSent: delivered || fallbackStats.totalSent,
-        opened: opened || fallbackStats.opened,
-        clicked: clicked || fallbackStats.clicked,
-        failed: bounced || fallbackStats.failed,
-      });
-    });
+    setLoading(true);
+    Promise.all([getLogs(), getStats(), getBrevoEvents({ limit: 100, days: 30 })])
+      .then(([logsRes, statsRes, brevoRes]) => {
+        setLogs(logsRes.data || []);
+        const brevo = brevoRes?.data;
+        const events = brevo?.events || brevo?.events?.items || brevo?.items || brevo?.data || [];
+        const list = Array.isArray(events) ? events : [];
+        const delivered = list.filter((e) => String(e.event || "").toLowerCase() === "delivered").length;
+        const opened = list.filter((e) => String(e.event || "").toLowerCase() === "opened").length;
+        const clicked = list.filter((e) => String(e.event || "").toLowerCase() === "click").length;
+        const bounced = list.filter((e) => String(e.event || "").toLowerCase() === "bounced").length;
+        const fallbackStats = statsRes.data || { totalSent: 0, opened: 0, clicked: 0, failed: 0 };
+        setStats({
+          totalSent: delivered || fallbackStats.totalSent,
+          opened: opened || fallbackStats.opened,
+          clicked: clicked || fallbackStats.clicked,
+          failed: bounced || fallbackStats.failed,
+        });
+      })
+      .catch(() => {
+        setLogs([]);
+        setStats({ totalSent: 0, opened: 0, clicked: 0, failed: 0 });
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   const openRate = stats.totalSent ? (stats.opened / stats.totalSent) * 100 : 0;
@@ -66,6 +75,9 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
+      {loading ? (
+        <CardSkeleton count={2} />
+      ) : (
       <div className="analytics-grid">
         <div className="panel analytics-card">
           <h4>Engagement breakdown</h4>
@@ -88,10 +100,13 @@ export default function AnalyticsPage() {
           </div>
         </div>
       </div>
+      )}
 
       <div className="panel logs-panel">
         <h4>Recent email logs</h4>
-        {!logs.length ? (
+        {loading ? (
+          <TableSkeleton rows={6} columns={6} />
+        ) : !logs.length ? (
           <div className="analytics-empty">
             <div className="contacts-empty-icon"><MailOpen size={24} /></div>
             <h3>No email logs yet</h3>

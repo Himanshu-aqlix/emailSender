@@ -58,10 +58,12 @@ export function resolveDateRangeForApi(f) {
 }
 
 /** Serialize contacts API query including filters. */
-export function buildContactsQueryParams({ page, limit, q, filters }) {
+export function buildContactsQueryParams({ page, limit, q, filters, visibility = "mine", ownerId = "" }) {
   const params = new URLSearchParams();
   params.set("page", String(page));
   params.set("limit", String(limit));
+  params.set("visibility", visibility || "mine");
+  if ((visibility || "mine") === "user" && ownerId) params.set("ownerId", String(ownerId));
   const qTrim = q != null ? String(q).trim() : "";
   if (qTrim) params.set("q", qTrim);
   params.set("sort", filters.sort || "newest");

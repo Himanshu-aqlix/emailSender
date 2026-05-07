@@ -39,6 +39,7 @@ export default function AppLayout() {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [listsOpen, setListsOpen] = useState(true);
   const [lists, setLists] = useState([]);
+  const [listsLoading, setListsLoading] = useState(true);
   const [activeListMenuId, setActiveListMenuId] = useState("");
   const [deleteListTarget, setDeleteListTarget] = useState(null);
   const [deleteListSubmitting, setDeleteListSubmitting] = useState(false);
@@ -90,12 +91,16 @@ export default function AppLayout() {
   };
 
   const refreshLists = useCallback(() => {
+    setListsLoading(true);
     getLists()
       .then(({ data }) => {
         setLists(Array.isArray(data) ? data : []);
       })
       .catch(() => {
         setLists([]);
+      })
+      .finally(() => {
+        setListsLoading(false);
       });
   }, []);
 
@@ -302,7 +307,13 @@ export default function AppLayout() {
             </button>
             {listsOpen && !sidebarCollapsedEffective ? (
               <div className="app-sidebar-lists-sub">
-                {lists.length === 0 ? (
+                {listsLoading ? (
+                  <div className="app-sidebar-lists-skeleton" aria-label="Loading lists">
+                    <span className="skeleton-line" />
+                    <span className="skeleton-line skeleton-line--medium" />
+                    <span className="skeleton-line skeleton-line--short" />
+                  </div>
+                ) : lists.length === 0 ? (
                   <span className="app-sidebar-lists-empty">No lists yet</span>
                 ) : (
                   lists.map((list) => (

@@ -5,6 +5,7 @@ import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, 
 import { AlertTriangle, CheckCircle2, ChevronRight, Eye, RefreshCw, Send, Sparkles, Users } from "lucide-react";
 import { getDashboardSummary } from "../services/statsService";
 import { formatCreatedDateTime } from "../utils/formatDateTime";
+import { CardSkeleton, TableSkeleton } from "../components/Loaders";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend, Filler);
 
@@ -499,6 +500,7 @@ export default function DashboardPage() {
           {refreshing ? "Refreshing..." : "Refresh"}
         </button>
       </div>
+      {loading ? <CardSkeleton count={4} /> : (
       <div className="kpi-grid">
         <div className={`kpi-card ${loading ? "kpi-skeleton" : ""}`}>
           <p className="kpi-heading">TOTAL SENT <span className="kpi-icon sent"><Send size={14} /></span></p>
@@ -521,6 +523,7 @@ export default function DashboardPage() {
           <small className="muted">Needs attention</small>
         </div>
       </div>
+      )}
 
       <div className="dashboard-grid">
         <div className="panel large engagement-panel">
@@ -578,10 +581,12 @@ export default function DashboardPage() {
           <h4>Campaign engagement</h4>
           <p className="campaign-engagement-sub">Unique opens vs clicks per campaign</p>
           <div className="chart-box campaign-engagement-chart">
-            <Bar
-              data={campaignBarData}
-              options={campaignBarOptions}
-            />
+            {loading ? <div className="campaign-engagement-chart-skeleton" aria-hidden /> : (
+              <Bar
+                data={campaignBarData}
+                options={campaignBarOptions}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -597,6 +602,9 @@ export default function DashboardPage() {
               View all <ChevronRight size={14} />
             </button>
           </div>
+          {loading ? (
+            <TableSkeleton rows={5} columns={5} showAvatar />
+          ) : (
           <table className="recent-campaigns-table">
             <thead>
               <tr>
@@ -640,9 +648,9 @@ export default function DashboardPage() {
                     <td>{recipientDisplay}</td>
                     <td>{openRateText}</td>
                     <td>
-                      <span className={`status-pill recent-status ${c.status === "completed" ? "success" : c.status === "draft" ? "draft" : c.status === "sending" ? "sending" : "failed"}`}>
+                      <span className={`status-pill recent-status ${c.status === "completed" ? "success" : c.status === "draft" ? "draft" : c.status === "processing" || c.status === "sending" ? "processing" : "failed"}`}>
                         {c.status === "completed" ? <CheckCircle2 size={13} /> : null}
-                        {c.status === "completed" ? "Completed" : c.status}
+                        {c.status === "completed" ? "Completed" : c.status === "processing" || c.status === "sending" ? "Processing" : c.status === "failed" ? "Failed" : "Draft"}
                       </span>
                     </td>
                   </tr>
@@ -654,6 +662,7 @@ export default function DashboardPage() {
               )}
             </tbody>
           </table>
+          )}
         </div>
         <div className="panel audience-panel">
           <div className="audience-head">
@@ -665,7 +674,13 @@ export default function DashboardPage() {
             <span className="audience-icon"><Users size={18} /></span>
           </div>
           <div className="audience-list">
-            {audienceRows.length ? audienceRows.map((row) => {
+            {loading ? (
+              <>
+                <span className="skeleton-line skeleton-line--medium" />
+                <span className="skeleton-line skeleton-line--medium" />
+                <span className="skeleton-line skeleton-line--short" />
+              </>
+            ) : audienceRows.length ? audienceRows.map((row) => {
               const pct = contactsCount > 0 ? Math.max((row.count / contactsCount) * 100, 4) : 0;
               return (
                 <div key={row.id} className="audience-row">
