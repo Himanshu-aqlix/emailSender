@@ -472,24 +472,31 @@ export default function CampaignsPage() {
                     </select>
                     <ChevronDown size={18} aria-hidden />
                   </div>
-                  {selectedTemplate ? (
-                    <div className="select-card campaign-select-preview">
-                      <strong>{selectedTemplate.name || "Untitled template"}</strong>
-                      <small>{selectedTemplate.subject || "Hello {{name}}"}</small>
-                      <button
-                        type="button"
-                        className="campaign-template-preview-icon"
-                        aria-label="Preview template"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setTemplatePreviewOpen(true);
-                        }}
-                      >
-                        <Eye size={14} />
-                      </button>
-                    </div>
-                  ) : null}
+                {selectedTemplate ? (
+  <div className="campaign-template-preview-section">
+    <div className="campaign-template-preview-label">
+      Template preview
+    </div>
+
+    <div className="select-card campaign-select-preview">
+      <strong>{selectedTemplate.name || "Untitled template"}</strong>
+      <small>{selectedTemplate.subject || "Hello {{name}}"}</small>
+
+      <button
+        type="button"
+        className="campaign-template-preview-icon"
+        aria-label="Preview template"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setTemplatePreviewOpen(true);
+        }}
+      >
+        <Eye size={14} />
+      </button>
+    </div>
+  </div>
+) : null}
                 </div>
               ) : null}
 

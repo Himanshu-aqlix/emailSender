@@ -7083,3 +7083,15 @@ button.template-item-meta:focus-visible {
     padding: 0;
   }
 }
+.campaign-template-preview-section {
+  margin-top: 18px;
+}
+
+.campaign-template-preview-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 10px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
