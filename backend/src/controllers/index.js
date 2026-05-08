@@ -17,9 +17,34 @@ const { enqueueCampaign } = require("../queues/emailQueue");
 const { normalizeRange, buildEngagementTimeline } = require("../utils/campaignEngagementTimeline");
 
 const sign = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+const ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+const USER_ROLE_VALUES = new Set(["admin", "user"]);
 const uploadsRootDir = process.env.AWS_LAMBDA_FUNCTION_NAME
   ? path.join("/tmp", "uploads")
   : path.join(__dirname, "..", "public", "uploads");
+
+const isAdminEmail = (email) => {
+  const normalized = String(email || "").trim().toLowerCase();
+  return !!ADMIN_EMAIL && normalized === ADMIN_EMAIL;
+};
+
+const toSafeUser = (userLike) => {
+  if (!userLike) return null;
+  const email = String(userLike.email || "").trim().toLowerCase();
+  const role = USER_ROLE_VALUES.has(String(userLike.role || "").trim().toLowerCase())
+    ? String(userLike.role).trim().toLowerCase()
+    : "user";
+  return {
+    id: userLike._id ?? userLike.id,
+    email,
+    role,
+    isActive: userLike.isActive !== false,
+    isSystemAdmin: isAdminEmail(email),
+    isAdmin: role === "admin" || isAdminEmail(email),
+    createdAt: userLike.createdAt || null,
+    updatedAt: userLike.updatedAt || null,
+  };
+};
 
 /** Contacts subscribed to any of a campaign's lists (for draft audience when no sends yet). */
 async function countContactsForCampaignLists(campaign, ownerId) {
@@ -83,29 +108,61 @@ const attachContactToList = async (ownerId, contactId, listId) => {
   await Contact.updateOne({ _id: contactId, owner: ownerId }, { $addToSet: { lists: listId } });
 };
 
-/** Parse first sheet of .xlsx / .xls / .csv buffer into { name, email, phone, fields } rows. */
+const contactHasList = (contact, listId) => {
+  const target = String(listId || "");
+  return Array.isArray(contact?.lists) && contact.lists.some((id) => String(id) === target);
+};
+
+const contactHasAllLists = (contact, listIds) => listIds.every((listId) => contactHasList(contact, listId));
+
+const attachContactToMissingLists = async (ownerId, contact, listIds) => {
+  const missingListIds = listIds.filter((listId) => !contactHasList(contact, listId));
+  for (const listId of missingListIds) {
+    await attachContactToList(ownerId, contact._id, listId);
+  }
+  return missingListIds.length;
+};
+
+/** Parse first sheet of .xlsx / .xls / .csv buffer into { name, email, phone, companyName, fields } rows. */
 const parseSpreadsheetBufferToRows = (buffer) => {
   const wb = xlsx.read(buffer, { type: "buffer" });
   const rows = xlsx.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
   return rows
     .map((r) => {
-      const o = Object.fromEntries(Object.entries(r).map(([k, v]) => [String(k).toLowerCase(), v]));
+      const normalizeHeader = (s) =>
+        String(s || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[\s._-]+/g, "");
+      const o = Object.fromEntries(Object.entries(r).map(([k, v]) => [normalizeHeader(k), v]));
+
+      const company = String(o.companyname ?? o.company ?? o.organization ?? o.organisation ?? "").trim();
       const fields = { ...o };
       delete fields.name;
       delete fields.email;
       delete fields.phone;
       delete fields.mobile;
       delete fields.tel;
+      delete fields.company;
+      delete fields.companyname;
+      delete fields.organization;
+      delete fields.organisation;
       const email = String(o.email || "").toLowerCase().trim();
       const phone = String(o.phone ?? o.mobile ?? o.tel ?? "").trim();
       return {
         name: String(o.name || "").trim(),
         email,
         phone,
+        companyName: company,
         fields,
       };
     })
     .filter((x) => x.email);
+};
+
+const addSkippedDuplicateEmail = (emails, email) => {
+  const normalized = String(email || "").toLowerCase().trim();
+  if (normalized && !emails.includes(normalized)) emails.push(normalized);
 };
 
 const normalizeTemplateAttachments = (raw) => {
@@ -131,7 +188,7 @@ exports.register = async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
     const user = await User.create({ email, password: hash });
-    res.status(201).json({ token: sign(user._id), user: { id: user._id, email: user.email } });
+    res.status(201).json({ token: sign(user._id), user: toSafeUser(user) });
   } catch (error) {
     if (error.code === 11000) {
       return res.status(400).json({ message: "Email already exists" });
@@ -152,15 +209,16 @@ exports.login = async (req, res) => {
   const safePassword = String(password);
 
   const user = await User.findOne({ email: safeEmail });
+  if (user && user.isActive === false) return res.status(403).json({ message: "This account has been deactivated" });
   if (!user || !(await bcrypt.compare(safePassword, user.password))) return res.status(401).json({ message: "Invalid credentials" });
-  res.json({ token: sign(user._id), user: { id: user._id, email: user.email } });
+  res.json({ token: sign(user._id), user: toSafeUser(user) });
 };
 
 exports.me = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select("email").lean();
+    const user = await User.findById(req.user.id).select("email role isActive createdAt updatedAt").lean();
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    res.json({ id: user._id, email: user.email });
+    res.json(toSafeUser(user));
   } catch {
     res.status(500).json({ message: "Internal server error" });
   }
@@ -179,30 +237,51 @@ exports.uploadExcel = async (req, res) => {
 
   const parsed = parseSpreadsheetBufferToRows(req.file.buffer);
   if (!parsed.length) return res.status(400).json({ message: "No valid rows (need email column)" });
+  const detectedCompany = parsed.some((r) => String(r.companyName || "").trim());
+  const importedCompanyCount = parsed.reduce((n, r) => (String(r.companyName || "").trim() ? n + 1 : n), 0);
+  console.log("[contacts-import] uploadExcel detectedCompanyColumn=", detectedCompany, "companyValues=", importedCompanyCount, "rows=", parsed.length);
 
-  let count = 0;
+  let inserted = 0;
+  const skippedDuplicateEmails = [];
+  const seenEmails = new Set();
   for (const row of parsed) {
-    let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
-    if (contact) {
-      if (row.name) contact.name = row.name;
-      if (row.phone) contact.phone = row.phone;
-      Object.assign(contact.fields || {}, row.fields || {});
-      await contact.save();
-      if (list) await attachContactToList(req.user.id, contact._id, list._id);
-    } else {
-      contact = await Contact.create({
-        owner: req.user.id,
-        name: row.name,
-        email: row.email,
-        phone: row.phone || "",
-        lists: list ? [list._id] : [],
-        fields: row.fields || {},
-      });
-      if (list) await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+    const email = String(row.email || "").toLowerCase().trim();
+    if (!email || seenEmails.has(email)) {
+      addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+      continue;
     }
-    count += 1;
+    seenEmails.add(email);
+
+    const existing = await Contact.findOne({ owner: req.user.id, email }).select("_id lists");
+    if (existing) {
+      if (!list || contactHasList(existing, list._id)) {
+        addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+        continue;
+      }
+      await attachContactToList(req.user.id, existing._id, list._id);
+      inserted += 1;
+      continue;
+    }
+
+    const contact = await Contact.create({
+      owner: req.user.id,
+      name: row.name,
+      companyName: row.companyName || "",
+      email,
+      phone: row.phone || "",
+      lists: list ? [list._id] : [],
+      fields: row.fields || {},
+    });
+    if (list) await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+    inserted += 1;
   }
-  res.status(201).json({ list: list || null, count });
+  res.status(201).json({
+    list: list || null,
+    count: parsed.length,
+    inserted,
+    skippedDuplicates: skippedDuplicateEmails.length,
+    skippedDuplicateEmails,
+  });
 };
 exports.uploadTemplateImage = async (req, res) => {
   if (!req.file?.buffer) return res.status(400).json({ message: "Image file is required" });
@@ -255,7 +334,17 @@ exports.getContacts = async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 10000);
   const skip = (page - 1) * limit;
 
-  const filter = { owner: req.user.id };
+  const visibility = String(req.query.visibility || "mine").trim().toLowerCase();
+  const ownerIdRaw = String(req.query.ownerId || "").trim();
+  const filter = {};
+
+  if (visibility === "all") {
+    // Shared workspace view: no owner restriction.
+  } else if (visibility === "user" && mongoose.Types.ObjectId.isValid(ownerIdRaw)) {
+    filter.owner = ownerIdRaw;
+  } else {
+    filter.owner = req.user.id;
+  }
 
   const listIdsParam = String(req.query.listIds || "").trim();
   if (listIdsParam && listIdsParam !== "all") {
@@ -292,6 +381,7 @@ exports.getContacts = async (req, res) => {
     const q = String(req.query.q).trim();
     filter.$or = [
       { name: { $regex: q, $options: "i" } },
+      { companyName: { $regex: q, $options: "i" } },
       { email: { $regex: q, $options: "i" } },
       { phone: { $regex: q, $options: "i" } },
     ];
@@ -302,10 +392,12 @@ exports.getContacts = async (req, res) => {
   if (sortKey === "oldest") sort = { createdAt: 1 };
   else if (sortKey === "name_asc") sort = { name: 1, createdAt: -1 };
   else if (sortKey === "name_desc") sort = { name: -1, createdAt: -1 };
+  else if (sortKey === "company_asc") sort = { companyName: 1, name: 1, createdAt: -1 };
+  else if (sortKey === "company_desc") sort = { companyName: -1, name: 1, createdAt: -1 };
   else if (sortKey === "newest") sort = { createdAt: -1 };
 
   const [items, total] = await Promise.all([
-    Contact.find(filter).populate("lists", "name").sort(sort).skip(skip).limit(limit),
+    Contact.find(filter).populate("lists", "name").populate("owner", "email role isActive createdAt updatedAt").sort(sort).skip(skip).limit(limit),
     Contact.countDocuments(filter),
   ]);
 
@@ -321,13 +413,58 @@ exports.getContacts = async (req, res) => {
     },
   });
 };
+exports.getContactOwners = async (req, res) => {
+  try {
+    const users = await User.find({ isActive: true })
+      .select("email role isActive createdAt updatedAt")
+      .sort({ email: 1 })
+      .lean();
+    return res.json(users.map((user) => toSafeUser(user)));
+  } catch {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
 exports.getListById = async (req, res) => {
-  const list = await List.findOne({ _id: req.params.id, owner: req.user.id }).populate({
-    path: "contacts",
-    options: { sort: { createdAt: -1 } },
-  });
+  const page = Math.max(parseInt(req.query.page || "1", 10), 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 100);
+  const list = await List.findOne({ _id: req.params.id, owner: req.user.id }).lean();
   if (!list) return res.status(404).json({ message: "List not found" });
-  return res.json(list);
+
+  const contactFilter = { owner: req.user.id, lists: list._id };
+  const filterBy = String(req.query.filterBy || "all");
+  if (filterBy === "hasPhone") contactFilter.phone = { $regex: /\S/ };
+  if (filterBy === "noPhone") contactFilter.$or = [{ phone: { $regex: /^\s*$/ } }, { phone: null }, { phone: { $exists: false } }];
+
+  const sortBy = String(req.query.sortBy || "newest");
+  let sort = { createdAt: -1 };
+  if (sortBy === "oldest") sort = { createdAt: 1 };
+  if (sortBy === "name") sort = { name: 1, email: 1 };
+
+  const [contactTotal, filteredTotal] = await Promise.all([
+    Contact.countDocuments({ owner: req.user.id, lists: list._id }),
+    Contact.countDocuments(contactFilter),
+  ]);
+  const totalPages = Math.max(Math.ceil(filteredTotal / limit), 1);
+  const safePage = Math.min(page, totalPages);
+  const contacts = await Contact.find(contactFilter)
+    .sort(sort)
+    .skip((safePage - 1) * limit)
+    .limit(limit)
+    .lean();
+
+  return res.json({
+    ...list,
+    contacts,
+    contactTotal,
+    pagination: {
+      page: safePage,
+      limit,
+      total: filteredTotal,
+      totalPages,
+      hasNextPage: safePage * limit < filteredTotal,
+      hasPrevPage: safePage > 1,
+    },
+  });
 };
 exports.getLists = async (req, res) => res.json(await List.find({ owner: req.user.id }).sort({ createdAt: -1 }));
 exports.createList = async (req, res) => {
@@ -389,10 +526,11 @@ exports.removeContactFromList = async (req, res) => {
   return res.json({ message: "Contact removed from list" });
 };
 exports.addSingleContact = async (req, res) => {
-  const { name, email, listId, listName, fields = {}, phone } = req.body;
+  const { name, email, listId, listName, fields = {}, phone, companyName } = req.body;
   if (!email) return res.status(400).json({ message: "Email is required" });
   const phoneTrim = phone != null ? String(phone).trim() : "";
   if (!phoneTrim) return res.status(400).json({ message: "Phone is required" });
+  const companyTrim = companyName != null ? String(companyName).trim() : "";
 
   const listIdRaw = listId ? String(listId).trim() : "";
   const listNameRaw = listName != null ? String(listName).trim() : "";
@@ -414,6 +552,7 @@ exports.addSingleContact = async (req, res) => {
 
   if (contact) {
     contact.name = (name || "").trim() || contact.name;
+    contact.companyName = companyTrim || contact.companyName || "";
     contact.phone = phoneTrim;
     Object.assign(contact.fields || {}, fields);
     await contact.save();
@@ -422,6 +561,7 @@ exports.addSingleContact = async (req, res) => {
     contact = await Contact.create({
       owner: req.user.id,
       name: (name || "").trim(),
+      companyName: companyTrim,
       email: emailNorm,
       phone: phoneTrim,
       lists: resolvedListId ? [resolvedListId] : [],
@@ -505,34 +645,51 @@ exports.bulkContacts = async (req, res) => {
 
     const parsed = parseSpreadsheetBufferToRows(req.file.buffer);
     if (!parsed.length) return res.status(400).json({ message: "No valid rows (need email column)" });
+    const detectedCompany = parsed.some((r) => String(r.companyName || "").trim());
+    const importedCompanyCount = parsed.reduce((n, r) => (String(r.companyName || "").trim() ? n + 1 : n), 0);
+    console.log("[contacts-import] bulkContacts detectedCompanyColumn=", detectedCompany, "companyValues=", importedCompanyCount, "rows=", parsed.length);
 
-    let processed = 0;
+    let inserted = 0;
+    const skippedDuplicateEmails = [];
+    const seenEmails = new Set();
     for (const row of parsed) {
-      let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
-      if (contact) {
-        if (row.name) contact.name = row.name;
-        if (row.phone) contact.phone = row.phone;
-        Object.assign(contact.fields || {}, row.fields || {});
-        await contact.save();
-        await attachContactToList(req.user.id, contact._id, list._id);
-      } else {
-        contact = await Contact.create({
-          owner: req.user.id,
-          name: row.name,
-          email: row.email,
-          phone: row.phone || "",
-          lists: [list._id],
-          fields: row.fields || {},
-        });
-        await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+      const email = String(row.email || "").toLowerCase().trim();
+      if (!email || seenEmails.has(email)) {
+        addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+        continue;
       }
-      processed += 1;
+      seenEmails.add(email);
+
+      const existing = await Contact.findOne({ owner: req.user.id, email }).select("_id lists");
+      if (existing) {
+        if (contactHasList(existing, list._id)) {
+          addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+          continue;
+        }
+        await attachContactToList(req.user.id, existing._id, list._id);
+        inserted += 1;
+        continue;
+      }
+
+      const contact = await Contact.create({
+        owner: req.user.id,
+        name: row.name,
+        companyName: row.companyName || "",
+        email,
+        phone: row.phone || "",
+        lists: [list._id],
+        fields: row.fields || {},
+      });
+      await List.updateOne({ _id: list._id }, { $addToSet: { contacts: contact._id } });
+      inserted += 1;
     }
 
     return res.status(201).json({
       list,
       count: parsed.length,
-      inserted: processed,
+      inserted,
+      skippedDuplicates: skippedDuplicateEmails.length,
+      skippedDuplicateEmails,
     });
   } catch (error) {
     return res.status(500).json({ message: error.message || "Bulk import failed" });
@@ -558,26 +715,48 @@ exports.bulkImportToLists = async (req, res) => {
 
     const parsedRows = parseSpreadsheetBufferToRows(req.file.buffer);
     if (!parsedRows.length) return res.status(400).json({ message: "No valid rows (need email column)" });
+    const detectedCompany = parsedRows.some((r) => String(r.companyName || "").trim());
+    const importedCompanyCount = parsedRows.reduce((n, r) => (String(r.companyName || "").trim() ? n + 1 : n), 0);
+    console.log(
+      "[contacts-import] bulkImportToLists detectedCompanyColumn=",
+      detectedCompany,
+      "companyValues=",
+      importedCompanyCount,
+      "rows=",
+      parsedRows.length
+    );
 
     const savedIds = [];
+    const skippedDuplicateEmails = [];
+    const seenEmails = new Set();
     for (const row of parsedRows) {
-      let contact = await Contact.findOne({ owner: req.user.id, email: row.email });
-      if (contact) {
-        if (row.name) contact.name = row.name;
-        if (row.phone) contact.phone = row.phone;
-        Object.assign(contact.fields || {}, row.fields || {});
-        await contact.save();
-      } else {
-        contact = await Contact.create({
-          owner: req.user.id,
-          name: row.name,
-          email: row.email,
-          phone: row.phone || "",
-          lists: validListIds,
-          fields: row.fields || {},
-        });
+      const email = String(row.email || "").toLowerCase().trim();
+      if (!email || seenEmails.has(email)) {
+        addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+        continue;
+      }
+      seenEmails.add(email);
+
+      const existing = await Contact.findOne({ owner: req.user.id, email }).select("_id lists");
+      if (existing) {
+        if (contactHasAllLists(existing, validListIds)) {
+          addSkippedDuplicateEmail(skippedDuplicateEmails, email);
+          continue;
+        }
+        await attachContactToMissingLists(req.user.id, existing, validListIds);
+        savedIds.push(existing._id);
+        continue;
       }
 
+      const contact = await Contact.create({
+        owner: req.user.id,
+        name: row.name,
+        companyName: row.companyName || "",
+        email,
+        phone: row.phone || "",
+        lists: validListIds,
+        fields: row.fields || {},
+      });
       savedIds.push(contact._id);
       for (const listId of validListIds) {
         await attachContactToList(req.user.id, contact._id, listId);
@@ -586,6 +765,8 @@ exports.bulkImportToLists = async (req, res) => {
 
     return res.status(201).json({
       imported: savedIds.length,
+      skippedDuplicates: skippedDuplicateEmails.length,
+      skippedDuplicateEmails,
       listIds: validListIds,
       message: "Contacts imported successfully",
     });
@@ -679,13 +860,14 @@ exports.bulkAssignContactsToLists = async (req, res) => {
 };
 
 exports.updateContact = async (req, res) => {
-  const { name, email, phone } = req.body;
+  const { name, email, phone, companyName } = req.body;
   const contact = await Contact.findOne({ _id: req.params.id, owner: req.user.id });
   if (!contact) return res.status(404).json({ message: "Contact not found" });
 
   const nameTrim = name != null ? String(name).trim() : "";
   const emailTrim = email != null ? String(email).toLowerCase().trim() : "";
   const phoneTrim = phone != null ? String(phone).trim() : "";
+  const companyTrim = companyName != null ? String(companyName).trim() : "";
 
   if (!emailTrim) return res.status(400).json({ message: "Email is required" });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrim)) {
@@ -697,6 +879,7 @@ exports.updateContact = async (req, res) => {
   if (dup) return res.status(409).json({ message: "A contact with this email already exists" });
 
   contact.name = nameTrim;
+  contact.companyName = companyTrim;
   contact.email = emailTrim;
   contact.phone = phoneTrim;
   await contact.save();
@@ -761,20 +944,35 @@ exports.createCampaign = async (req, res) => {
   res.status(201).json(c);
 };
 exports.sendCampaign = async (req, res) => {
-  const campaign = await Campaign.findById(req.body.campaignId);
+  const campaign = await Campaign.findOne({ _id: req.body.campaignId, owner: req.user.id });
   if (!campaign) return res.status(404).json({ message: "Campaign not found" });
-  // Mark as sending before enqueueing. In direct mode the worker may complete immediately,
-  // and setting `sending` afterwards would overwrite the final `completed/failed` status.
-  campaign.status = "sending";
+  if (["processing", "sending"].includes(String(campaign.status))) {
+    return res.json({ message: "Campaign is already processing", campaign });
+  }
+  console.log("[campaign-send-diagnostic] send-request", {
+    at: new Date().toISOString(),
+    campaignId: String(campaign._id),
+    previousStatus: campaign.status,
+    owner: String(campaign.owner),
+  });
+  campaign.status = "processing";
   await campaign.save();
+  console.log("[campaign-send-diagnostic] controller-status-set-processing", {
+    at: new Date().toISOString(),
+    campaignId: String(campaign._id),
+  });
   const result = await enqueueCampaign(campaign._id);
-  // If queue is disabled (direct mode), the campaign status will already be updated
-  // by the worker to completed/failed. Only force "sending" when actually queued.
   if (result?.queued) {
-    campaign.status = "sending";
+    campaign.status = "processing";
     await campaign.save();
   }
-  res.json({ message: result.queued ? "Campaign queued" : "Campaign sent immediately (queue disabled)" });
+  console.log("[campaign-send-diagnostic] enqueue-result", {
+    at: new Date().toISOString(),
+    campaignId: String(campaign._id),
+    result,
+    responseStatus: 202,
+  });
+  res.status(202).json({ message: "Campaign processing started", campaignId: campaign._id });
 };
 exports.getCampaigns = async (req, res) => {
   const page = Math.max(parseInt(req.query.page || "1", 10), 1);
@@ -782,7 +980,9 @@ exports.getCampaigns = async (req, res) => {
   const skip = (page - 1) * limit;
   const filter = { owner: req.user.id };
   const status = req.query.status;
-  if (status && ["draft", "sending", "completed", "failed"].includes(status)) filter.status = status;
+  if (status && ["draft", "processing", "sending", "completed", "failed"].includes(status)) {
+    filter.status = status === "processing" ? { $in: ["processing", "sending"] } : status;
+  }
   if (req.query.q) {
     const q = String(req.query.q).trim();
     filter.name = { $regex: q, $options: "i" };
@@ -817,18 +1017,40 @@ exports.getCampaigns = async (req, res) => {
     Campaign.countDocuments(filter),
   ]);
 
-  // Self-heal old "sending" campaigns (e.g. previously overwritten in direct mode).
+  // Self-heal old processing/sending campaigns (e.g. previously interrupted workers).
   // This does not change the send flow; it just aligns campaign status with existing logs.
   const now = Date.now();
   for (const c of items) {
-    if (c.status !== "sending") continue;
+    if (!["processing", "sending"].includes(String(c.status))) continue;
     if (now - new Date(c.updatedAt).getTime() < 30_000) continue;
-    const [anySent, anyFailed] = await Promise.all([
+    const targetListIds = (Array.isArray(c.listIds) && c.listIds.length ? c.listIds : [c.listId])
+      .map((id) => id?._id || id)
+      .filter(Boolean);
+    const [anySent, anyFailed, sentCount, failedCount, totalLogs, totalRecipients] = await Promise.all([
       EmailLog.exists({ owner: req.user.id, campaignId: c._id, status: "sent" }).catch(() => null),
       EmailLog.exists({ owner: req.user.id, campaignId: c._id, status: "failed" }).catch(() => null),
+      EmailLog.countDocuments({ owner: req.user.id, campaignId: c._id, status: "sent" }).catch(() => 0),
+      EmailLog.countDocuments({ owner: req.user.id, campaignId: c._id, status: "failed" }).catch(() => 0),
+      EmailLog.countDocuments({ owner: req.user.id, campaignId: c._id }).catch(() => 0),
+      Contact.countDocuments({ owner: req.user.id, lists: { $in: targetListIds } }).catch(() => 0),
     ]);
     const nextStatus = anySent ? "completed" : anyFailed ? "failed" : null;
     if (!nextStatus) continue;
+    console.log("[campaign-send-diagnostic] getCampaigns-self-heal-status-update", {
+      at: new Date().toISOString(),
+      campaignId: String(c._id),
+      previousStatus: c.status,
+      nextStatus,
+      ageMs: now - new Date(c.updatedAt).getTime(),
+      totalRecipients,
+      totalLogs,
+      sentCount,
+      failedCount,
+      anySent: Boolean(anySent),
+      anyFailed: Boolean(anyFailed),
+      targetListIds: targetListIds.map((id) => String(id || "")),
+      note: "This status update happens while serving GET /api/campaigns, outside the queue worker.",
+    });
     c.status = nextStatus;
     await Campaign.updateOne({ _id: c._id, owner: req.user.id }, { $set: { status: nextStatus } }).catch(() => null);
   }
@@ -1376,12 +1598,152 @@ exports.getDashboardSummary = async (req, res) => {
     audienceRows: Array.from(audienceMap.values()).sort((a, b) => b.count - a.count).slice(0, 5),
   });
 };
-exports.getLogs = async (req, res) =>
-  res.json(
-    await EmailLog.find({ owner: req.user.id })
-      .populate("campaignId", "name")
+
+exports.getAdminUsers = async (req, res) => {
+  try {
+    const users = await User.find({})
+      .select("email role isActive createdAt updatedAt")
       .sort({ createdAt: -1 })
-  );
+      .lean();
+    return res.json(users.map((user) => toSafeUser(user)));
+  } catch {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.createAdminUser = async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+    const requestedRole = String(req.body?.role || "user").trim().toLowerCase();
+    const role = USER_ROLE_VALUES.has(requestedRole) ? requestedRole : "user";
+    const isActive = req.body?.isActive !== false;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password are required" });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+
+    const hash = await bcrypt.hash(password, 10);
+    const user = await User.create({
+      email,
+      password: hash,
+      role,
+      isActive,
+    });
+    return res.status(201).json(toSafeUser(user));
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ message: "Email already exists" });
+    }
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.updateAdminUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const currentEmail = String(user.email || "").trim().toLowerCase();
+    const nextEmail = req.body?.email != null ? String(req.body.email).trim().toLowerCase() : currentEmail;
+    const requestedRole = req.body?.role != null ? String(req.body.role).trim().toLowerCase() : String(user.role || "user");
+    const nextRole = USER_ROLE_VALUES.has(requestedRole) ? requestedRole : "user";
+    const nextIsActive = req.body?.isActive != null ? req.body.isActive !== false : user.isActive !== false;
+    const password = req.body?.password != null ? String(req.body.password) : "";
+
+    if (!nextEmail) return res.status(400).json({ message: "Email is required" });
+    if (password && password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+    if (isAdminEmail(currentEmail) && nextEmail !== currentEmail) {
+      return res.status(400).json({ message: "Configured admin email cannot be changed" });
+    }
+    if (isAdminEmail(currentEmail) && !nextIsActive) {
+      return res.status(400).json({ message: "Configured admin account cannot be deactivated" });
+    }
+
+    user.email = nextEmail;
+    user.role = nextRole;
+    user.isActive = nextIsActive;
+    if (password) user.password = await bcrypt.hash(password, 10);
+    await user.save();
+    return res.json(toSafeUser(user));
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ message: "Email already exists" });
+    }
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.deleteAdminUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const targetId = String(user._id);
+    const currentUserId = String(req.user.id);
+    const email = String(user.email || "").trim().toLowerCase();
+
+    if (targetId === currentUserId) {
+      return res.status(400).json({ message: "You cannot delete your own account while signed in" });
+    }
+    if (isAdminEmail(email)) {
+      return res.status(400).json({ message: "Configured system admin account cannot be deleted" });
+    }
+
+    await User.deleteOne({ _id: user._id });
+    return res.json({ message: "User deleted successfully", user: toSafeUser(user) });
+  } catch {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.toggleAdminUserStatus = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    const email = String(user.email || "").trim().toLowerCase();
+    if (isAdminEmail(email)) {
+      return res.status(400).json({ message: "Configured admin account cannot be deactivated" });
+    }
+    user.isActive = !(user.isActive !== false);
+    await user.save();
+    return res.json(toSafeUser(user));
+  } catch {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.getLogs = async (req, res) => {
+  const page = Math.max(parseInt(req.query.page || "1", 10), 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit || "10", 10), 1), 100);
+  const filter = { owner: req.user.id };
+
+  const total = await EmailLog.countDocuments(filter);
+  const totalPages = Math.max(Math.ceil(total / limit), 1);
+  const safePage = Math.min(page, totalPages);
+  const items = await EmailLog.find(filter)
+    .populate("campaignId", "name")
+    .sort({ createdAt: -1 })
+    .skip((safePage - 1) * limit)
+    .limit(limit);
+
+  return res.json({
+    items,
+    pagination: {
+      page: safePage,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: safePage * limit < total,
+      hasPrevPage: safePage > 1,
+    },
+  });
+};
 
 exports.trackOpen = async (req, res) => {
   await EmailLog.findByIdAndUpdate(req.params.id, { opened: true });

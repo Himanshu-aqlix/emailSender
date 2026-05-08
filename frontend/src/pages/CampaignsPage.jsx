@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BarChart3, CheckCircle2, ChevronDown, Eye, Filter, Plus, Send, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import CampaignsFilter from "../components/CampaignsFilter";
+import { ButtonLoader, TableSkeleton } from "../components/Loaders";
 import { createCampaign, getCampaigns, sendCampaign } from "../services/campaignService";
 import { getContacts } from "../services/contactService";
 import { getLists } from "../services/listService";
@@ -29,6 +30,24 @@ const asArray = (value) => {
 
 const emptyCampaignPagination = { page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false, limit: 10 };
 
+const isCampaignProcessing = (status) => ["processing", "sending"].includes(String(status || "").toLowerCase());
+
+const campaignStatusLabel = (status) => {
+  const s = String(status || "draft").toLowerCase();
+  if (isCampaignProcessing(s)) return "Processing";
+  if (s === "completed") return "Completed";
+  if (s === "failed") return "Failed";
+  return "Draft";
+};
+
+const campaignStatusClass = (status) => {
+  const s = String(status || "draft").toLowerCase();
+  if (s === "completed") return "success";
+  if (isCampaignProcessing(s)) return "processing";
+  if (s === "failed") return "failed";
+  return "draft";
+};
+
 export default function CampaignsPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
@@ -45,23 +64,32 @@ export default function CampaignsPage() {
   const [appliedFilters, setAppliedFilters] = useState(DEFAULT_CAMPAIGN_FILTERS);
   const [lists, setLists] = useState([]);
   const [contacts, setContacts] = useState([]);
+  const [assetsLoading, setAssetsLoading] = useState(true);
+  const [campaignsLoading, setCampaignsLoading] = useState(true);
+  const [campaignsLoaded, setCampaignsLoaded] = useState(false);
   const [form, setForm] = useState({ name: "", templateId: "", listIds: [] });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [templatePreviewOpen, setTemplatePreviewOpen] = useState(false);
 
   const loadWizardAssets = async () => {
-    const [t, l, c] = await Promise.all([
-      getTemplates(),
-      getLists(),
-      getContacts("page=1&limit=10000"),
-    ]);
-    setTemplates(asArray(t.data));
-    setLists(asArray(l.data));
-    setContacts(asArray(c.data));
+    setAssetsLoading(true);
+    try {
+      const [t, l, c] = await Promise.all([
+        getTemplates(),
+        getLists(),
+        getContacts("page=1&limit=10000"),
+      ]);
+      setTemplates(asArray(t.data));
+      setLists(asArray(l.data));
+      setContacts(asArray(c.data));
+    } finally {
+      setAssetsLoading(false);
+    }
   };
 
-  const fetchCampaignTable = async () => {
+  const fetchCampaignTable = useCallback(async () => {
+    if (!campaignsLoaded) setCampaignsLoading(true);
     try {
       const params = buildCampaignsQueryParams({
         page: campaignPage,
@@ -81,8 +109,11 @@ export default function CampaignsPage() {
     } catch {
       setCampaigns([]);
       setCampaignPagination(emptyCampaignPagination);
+    } finally {
+      setCampaignsLoaded(true);
+      setCampaignsLoading(false);
     }
-  };
+  }, [appliedFilters, campaignLimit, campaignPage, campaignQuery, campaignsLoaded]);
 
   useEffect(() => {
     loadWizardAssets();
@@ -98,7 +129,13 @@ export default function CampaignsPage() {
 
   useEffect(() => {
     fetchCampaignTable();
-  }, [campaignPage, campaignLimit, campaignQuery, appliedFilters]);
+  }, [fetchCampaignTable]);
+
+  useEffect(() => {
+    if (!campaigns.some((c) => isCampaignProcessing(c.status))) return undefined;
+    const timer = setInterval(fetchCampaignTable, 2500);
+    return () => clearInterval(timer);
+  }, [campaigns, fetchCampaignTable]);
 
   const activeFilterChips = useMemo(() => {
     const f = appliedFilters;
@@ -148,7 +185,7 @@ export default function CampaignsPage() {
     setError("");
     setStep(1);
     const firstListId = lists[0]?._id || "";
-    setForm({ name: "", templateId: templates[0]?._id || "", listIds: firstListId ? [firstListId] : [] });
+    setForm({ name: "", templateId: "", listIds: firstListId ? [firstListId] : [] });
     setOpen(true);
   };
   const next = () => {
@@ -166,7 +203,6 @@ export default function CampaignsPage() {
       const { data } = await createCampaign(form);
       await sendCampaign(data._id);
       setOpen(false);
-      await loadWizardAssets();
       await fetchCampaignTable();
     } catch (e) {
       setError(e?.response?.data?.message || "Failed to create campaign");
@@ -206,7 +242,9 @@ export default function CampaignsPage() {
           <h2 className="dashboard-title">Campaigns</h2>
           <p className="dashboard-subtitle">Create, schedule, and track bulk email campaigns.</p>
         </div>
-        <button className="danger-btn" onClick={openModal}><Plus size={14} /> New campaign</button>
+        <button className="danger-btn" onClick={openModal} disabled={assetsLoading}>
+          {assetsLoading ? <ButtonLoader label="Loading campaign assets" /> : <><Plus size={14} /> New campaign</>}
+        </button>
       </div>
 
       <div className="contacts-table-wrap">
@@ -269,20 +307,23 @@ export default function CampaignsPage() {
           </div>
         ) : null}
 
-        <table className="contacts-table">
-          <thead>
-            <tr>
-              <th>Campaign</th>
-              <th>Template</th>
-              <th>List</th>
-              <th>Status</th>
-              <th>Created</th>
-              <th>Sent</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {campaigns.map((c) => (
+        {campaignsLoading ? (
+          <TableSkeleton rows={6} columns={7} />
+        ) : (
+          <table className="contacts-table">
+            <thead>
+              <tr>
+                <th>Campaign</th>
+                <th>Template</th>
+                <th>List</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Sent</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {campaigns.map((c) => (
               <tr key={c._id}>
                 <td className="name-cell">{c.name}</td>
                 <td>{c.templateId?.name || "—"}</td>
@@ -300,11 +341,9 @@ export default function CampaignsPage() {
                 </td>
                 <td>
                   <span
-                    className={`status-pill ${
-                      c.status === "completed" ? "success" : c.status === "sending" ? "sending" : c.status === "failed" ? "failed" : "draft"
-                    }`}
+                    className={`status-pill ${campaignStatusClass(c.status)}`}
                   >
-                    {c.status}
+                    {campaignStatusLabel(c.status)}
                   </span>
                 </td>
                 <td>{new Date(c.createdAt).toLocaleDateString()}</td>
@@ -321,10 +360,11 @@ export default function CampaignsPage() {
                   </button>
                 </td>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        {!campaigns.length && showNoCampaignsYet ? (
+              ))}
+            </tbody>
+          </table>
+        )}
+        {!campaignsLoading && !campaigns.length && showNoCampaignsYet ? (
           <div className="analytics-empty">
             <div className="contacts-empty-icon">
               <Send size={24} />
@@ -333,7 +373,7 @@ export default function CampaignsPage() {
             <p>Create your first campaign to start sending and tracking email performance.</p>
           </div>
         ) : null}
-        {!campaigns.length && showNoResults ? (
+        {!campaignsLoading && !campaigns.length && showNoResults ? (
           <div className="analytics-empty">
             <div className="contacts-empty-icon">
               <Filter size={24} />
@@ -342,7 +382,7 @@ export default function CampaignsPage() {
             <p>Try adjusting your search or filters.</p>
           </div>
         ) : null}
-        {campaignPagination.total > 0 ? (
+        {!campaignsLoading && campaignPagination.total > 0 ? (
           <div className="contacts-pagination campaigns-pagination">
             <span className="campaigns-page-meta">
               {campaignPagination.total} total · Page {campaignPagination.page} of {campaignPagination.totalPages}
@@ -419,34 +459,44 @@ export default function CampaignsPage() {
               {step === 2 ? (
                 <div className="wizard-body campaign-wizard-pane">
                   <label className="campaign-field-label" htmlFor="campaign-template-select">Template</label>
-                  <div className="select-card campaign-select-preview">
-                    <strong>{selectedTemplate?.name || "Untitled template"}</strong>
-                    <small>{selectedTemplate?.subject || "Hello {{name}}"}</small>
-                    <button
-                      type="button"
-                      className="campaign-template-preview-icon"
-                      aria-label="Preview template"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (selectedTemplate) setTemplatePreviewOpen(true);
-                      }}
-                    >
-                      <Eye size={14} />
-                    </button>
-                  </div>
                   <div className="select-wrap campaign-select-wrap">
                     <select
                       id="campaign-template-select"
                       className="campaign-wizard-select"
                       value={form.templateId}
+                      disabled={assetsLoading}
                       onChange={(e) => setForm({ ...form, templateId: e.target.value })}
                     >
-                      <option value="">Select template</option>
+                      <option value="">{assetsLoading ? "Loading templates..." : "Select template"}</option>
                       {templates.map((t) => <option key={t._id} value={t._id}>{t.name}</option>)}
                     </select>
                     <ChevronDown size={18} aria-hidden />
                   </div>
+                {selectedTemplate ? (
+  <div className="campaign-template-preview-section">
+    <div className="campaign-template-preview-label">
+      Template preview
+    </div>
+
+    <div className="select-card campaign-select-preview">
+      <strong>{selectedTemplate.name || "Untitled template"}</strong>
+      <small>{selectedTemplate.subject || "Hello {{name}}"}</small>
+
+      <button
+        type="button"
+        className="campaign-template-preview-icon"
+        aria-label="Preview template"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setTemplatePreviewOpen(true);
+        }}
+      >
+        <Eye size={14} />
+      </button>
+    </div>
+  </div>
+) : null}
                 </div>
               ) : null}
 
@@ -473,7 +523,14 @@ export default function CampaignsPage() {
                     </div>
                   </div>
                   <div className="campaign-list-multiselect" role="group" aria-label="Select recipient lists">
-                    {lists.map((l) => {
+                    {assetsLoading ? (
+                      <div className="campaign-list-option">
+                        <span className="campaign-list-copy">
+                          <span className="skeleton-line skeleton-line--medium" />
+                          <span className="skeleton-line skeleton-line--short" />
+                        </span>
+                      </div>
+                    ) : lists.map((l) => {
                       const id = String(l._id);
                       const rowCount = getListCount(l._id);
                       const checked = selectedListIds.includes(id);
@@ -534,12 +591,12 @@ export default function CampaignsPage() {
                 Back
               </button>
               {step < 4 ? (
-                <button type="button" className="campaign-wizard-btn-next" onClick={next}>
+                <button type="button" className="campaign-wizard-btn-next" onClick={next} disabled={assetsLoading || (step === 2 && !form.templateId)}>
                   Continue
                 </button>
               ) : (
                 <button type="button" className="campaign-wizard-btn-send" onClick={sendNow} disabled={busy}>
-                  {busy ? "Sending…" : "Send campaign"}
+                  {busy ? "Starting..." : "Send campaign"}
                 </button>
               )}
             </div>

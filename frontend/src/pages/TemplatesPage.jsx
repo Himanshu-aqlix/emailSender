@@ -11,6 +11,7 @@ import {
 } from "../services/templateService";
 import TemplatePreview from "../components/TemplatePreview";
 import EmailEditor from "../components/EmailEditor";
+import { ButtonLoader, CardSkeleton } from "../components/Loaders";
 
 const defaultHtmlContent = "";
 const defaultTemplateName = "";
@@ -19,6 +20,7 @@ const defaultTemplateSubject = "";
 export default function TemplatesPage() {
   const completionDisposableRef = useRef(null);
   const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [activeId, setActiveId] = useState("");
   const [tab, setTab] = useState("wysiwyg");
   const [busy, setBusy] = useState(false);
@@ -88,8 +90,9 @@ export default function TemplatesPage() {
   };
 
   /** @param {string} [preferredTemplateId] — pass after save so we select the saved row (fixes stale closure with new templates). */
-  const load = (preferredTemplateId) =>
-    getTemplates().then((r) => {
+  const load = (preferredTemplateId, silent = false) => {
+    if (!silent) setLoading(true);
+    return getTemplates().then((r) => {
       const rows = Array.isArray(r.data) ? r.data : r.data?.items || r.data?.templates || [];
       setTemplates(rows);
       if (!rows.length) return;
@@ -102,7 +105,8 @@ export default function TemplatesPage() {
       setSubject(current.subject);
       setHtmlContent(current.html);
       setAttachments(Array.isArray(current.attachments) ? current.attachments : []);
-    });
+    }).finally(() => setLoading(false));
+  };
 
   useEffect(() => {
     load();
@@ -179,7 +183,7 @@ export default function TemplatesPage() {
       setName(saved.name?.trim() ?? payload.name);
       setSubject(saved.subject?.trim() ?? payload.subject);
       setAttachments(Array.isArray(saved.attachments) ? saved.attachments : attachments);
-      await load(saved._id);
+      await load(saved._id, true);
       setNotice("Template saved successfully.");
     } catch (e) {
       setError(e?.response?.data?.message || "Unable to save template.");
@@ -200,7 +204,7 @@ export default function TemplatesPage() {
       if (wasActive) onNew();
       setDeleteModal(null);
       setDeleteModalInput("");
-      await load();
+      await load(undefined, true);
       setNotice("Template deleted.");
     } catch (e) {
       setError(e?.response?.data?.message || "Unable to delete template.");
@@ -315,7 +319,7 @@ export default function TemplatesPage() {
               type="button"
               className="templates-list-add-btn"
               onClick={onNew}
-              disabled={busy}
+              disabled={busy || loading}
               title="Create new template"
               aria-label="Create new template"
             >
@@ -323,7 +327,9 @@ export default function TemplatesPage() {
             </button>
           </div>
           <div className="templates-list-body">
-            {templates.length ? (
+            {loading ? (
+              <CardSkeleton count={3} />
+            ) : templates.length ? (
               templates.map((t) => (
                 <div
                   key={t._id}
@@ -331,18 +337,21 @@ export default function TemplatesPage() {
                 >
                   <button type="button" className="template-item" onClick={() => selectTemplate(t)}>
                     <span className="template-item-icon">
-                      <FileText size={14} />
+                      <FileText size={22} strokeWidth={2} />
                     </span>
                     <div className="template-item-body">
-                      <div className="template-item-top">
-                        <strong>{t.name}</strong>
-                        <span className={`template-state ${activeId === t._id ? "active" : "draft"}`}>
-                          {activeId === t._id ? "Active" : "Draft"}
-                        </span>
-                      </div>
-                      <p>{t.subject}</p>
-                      <small><Clock3 size={12} /> Updated {new Date(t.updatedAt || t.createdAt).toLocaleDateString()}</small>
+                      <strong className="template-item-title">{t.name}</strong>
                     </div>
+                  </button>
+                  <div className="fle">
+                  <button
+                    type="button"
+                    className="template-item-meta"
+                    aria-label={`Open template ${t.name || "Untitled"}`}
+                    onClick={() => selectTemplate(t)}
+                  >
+                    <Clock3 size={12} aria-hidden />
+                    <span>Updated {new Date(t.updatedAt || t.createdAt).toLocaleDateString()}</span>
                   </button>
                   <button
                     type="button"
@@ -357,6 +366,7 @@ export default function TemplatesPage() {
                   >
                     <Trash2 size={14} strokeWidth={2} />
                   </button>
+                  </div>
                 </div>
               ))
             ) : (
@@ -365,6 +375,17 @@ export default function TemplatesPage() {
           </div>
         </aside>
 
+        {loading ? (
+          <>
+            <div className="template-editor-card middle">
+              <CardSkeleton count={1} />
+            </div>
+            <div className="template-preview-card">
+              <CardSkeleton count={1} />
+            </div>
+          </>
+        ) : (
+        <>
         <div className="template-editor-card middle">
           <div className="template-meta">
             <label className="template-meta-field" htmlFor="template-name-input">
@@ -417,8 +438,8 @@ export default function TemplatesPage() {
               <button className="ghost-btn" onClick={onPickAttachment} disabled={busy}>
                 + Attachment
               </button>
-              <button type="button" className="templates-save-btn" onClick={save} disabled={busy}>
-                <Save size={14} /> {busy ? "Saving..." : "Save"}
+              <button type="button" className="templates-save-btn" onClick={save} disabled={busy || loading}>
+                {busy ? <ButtonLoader label="Saving template" /> : <><Save size={14} /> Save</>}
               </button>
             </div>
           </div>
@@ -453,6 +474,8 @@ export default function TemplatesPage() {
         </div>
 
         <TemplatePreview subject={subject} html={htmlContent} />
+        </>
+        )}
       </div>
       <input
         ref={attachmentInputRef}

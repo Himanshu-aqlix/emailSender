@@ -132,7 +132,7 @@ export default function TemplatePreview({ subject, html, sampleCampaignTitle }) 
                 <span><i /> <i /> <i /></span>
                 <Mail size={13} />
               </div>
-              <div dangerouslySetInnerHTML={{ __html: renderedHtml }} />
+              <div className="template-preview-content ql-editor" dangerouslySetInnerHTML={{ __html: renderedHtml }} />
             </div>
           </div>
           <p className="preview-note">Personalization tokens render with sample data</p>

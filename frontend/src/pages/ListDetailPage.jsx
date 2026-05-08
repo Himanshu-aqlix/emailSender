@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArrowUpDown,
   ArrowUpFromLine,
+  CheckCircle2,
   ListX,
   Mail,
   MoreVertical,
@@ -25,8 +26,17 @@ import {
 import { getListById } from "../services/listService";
 import { formatCreatedDateTime } from "../utils/formatDateTime";
 import { errorToast, messageFromAxios, successToast } from "../utils/toast";
+import { TableSkeleton } from "../components/Loaders";
 
 const LIST_CONTACT_MENU_MIN_WIDTH = 236;
+const LIST_CONTACT_PAGE_LIMITS = [10, 25, 50, 100];
+const EMPTY_LIST_PAGINATION = {
+  page: 1,
+  totalPages: 1,
+  total: 0,
+  hasNextPage: false,
+  hasPrevPage: false,
+};
 
 export default function ListDetailPage() {
   const { id } = useParams();
@@ -35,24 +45,29 @@ export default function ListDetailPage() {
 
   const [listName, setListName] = useState("");
   const [contacts, setContacts] = useState([]);
+  const [contactTotal, setContactTotal] = useState(0);
+  const [pagination, setPagination] = useState(EMPTY_LIST_PAGINATION);
   const [loading, setLoading] = useState(true);
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
-  const [addForm, setAddForm] = useState({ name: "", email: "", phone: "" });
+  const [addForm, setAddForm] = useState({ name: "", email: "", companyName: "", phone: "" });
   const [addError, setAddError] = useState("");
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importSubmitting, setImportSubmitting] = useState(false);
   const [importError, setImportError] = useState("");
+  const [importResult, setImportResult] = useState(null);
   const [sortBy, setSortBy] = useState("newest");
   const [filterBy, setFilterBy] = useState("all");
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(10);
 
   const [openContactMenuRowId, setOpenContactMenuRowId] = useState(null);
   const [contactMenuCoords, setContactMenuCoords] = useState(null);
   const contactMenuTriggerRef = useRef(null);
   const [editTarget, setEditTarget] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", email: "", phone: "" });
+  const [editForm, setEditForm] = useState({ name: "", email: "", companyName: "", phone: "" });
   const [editError, setEditError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
 
@@ -61,26 +76,40 @@ export default function ListDetailPage() {
 
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const importModalOpenRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!id) return;
     setLoading(true);
+    const params = new URLSearchParams();
+    params.set("page", String(page));
+    params.set("limit", String(limit));
+    params.set("sortBy", sortBy);
+    params.set("filterBy", filterBy);
     try {
-      const { data } = await getListById(id);
+      const { data } = await getListById(id, params.toString());
       setListName(data?.name || `List ${String(id).slice(-6)}`);
       setContacts(Array.isArray(data?.contacts) ? data.contacts : []);
+      setContactTotal(Number(data?.contactTotal || 0));
+      setPagination(data?.pagination || EMPTY_LIST_PAGINATION);
     } catch (e) {
       setListName("");
       setContacts([]);
+      setContactTotal(0);
+      setPagination(EMPTY_LIST_PAGINATION);
       errorToast(messageFromAxios(e, "Something went wrong"));
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, page, limit, sortBy, filterBy]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [id]);
 
   useLayoutEffect(() => {
     if (!openContactMenuRowId) {
@@ -139,6 +168,7 @@ export default function ListDetailPage() {
   }, [showAddModal]);
 
   useEffect(() => {
+    importModalOpenRef.current = showImportModal;
     if (showImportModal) {
       setImportFile(null);
       setImportError("");
@@ -150,6 +180,7 @@ export default function ListDetailPage() {
       setEditForm({
         name: editTarget.name || "",
         email: editTarget.email || "",
+        companyName: editTarget.companyName || "",
         phone: editTarget.phone || "",
       });
       setEditError("");
@@ -166,11 +197,6 @@ export default function ListDetailPage() {
   const openRemoveFromMenu = (c) => {
     closeContactMenu();
     setRemoveTarget(c);
-  };
-
-  const openDeleteFromMenu = (c) => {
-    closeContactMenu();
-    setDeleteTarget(c);
   };
 
   const emailValid = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || "").trim());
@@ -196,6 +222,7 @@ export default function ListDetailPage() {
       await updateContact(editTarget._id, {
         name: nameTrim,
         email: emailTrim,
+        companyName: editForm.companyName.trim(),
         phone: phoneTrim,
       });
       setEditTarget(null);
@@ -251,16 +278,18 @@ export default function ListDetailPage() {
       setAddError("Email and phone are required.");
       return;
     }
+    const companyTrim = addForm.companyName.trim();
     setAddSubmitting(true);
     try {
       await createContact({
         name: addForm.name.trim(),
+        companyName: companyTrim,
         email: emailTrim,
         phone: phoneTrim,
         listId: id,
       });
       setShowAddModal(false);
-      setAddForm({ name: "", email: "", phone: "" });
+      setAddForm({ name: "", email: "", companyName: "", phone: "" });
       await load();
       window.dispatchEvent(new Event("contacts:refresh"));
       window.dispatchEvent(new Event("lists:refresh"));
@@ -273,6 +302,11 @@ export default function ListDetailPage() {
 
   const pickImportFile = () => importFileInputRef.current?.click();
 
+  const closeImportModal = () => {
+    importModalOpenRef.current = false;
+    setShowImportModal(false);
+  };
+
   const onImportConfirm = async () => {
     if (!importFile || !id) return;
     setImportError("");
@@ -281,14 +315,24 @@ export default function ListDetailPage() {
       const fd = new FormData();
       fd.append("file", importFile);
       fd.append("listId", id);
-      await bulkContacts(fd);
+      const { data } = await bulkContacts(fd);
       setShowImportModal(false);
       setImportFile(null);
       await load();
       window.dispatchEvent(new Event("contacts:refresh"));
       window.dispatchEvent(new Event("lists:refresh"));
+      setImportResult({
+        inserted: Number(data?.inserted || data?.imported || 0),
+        skippedDuplicates: Number(data?.skippedDuplicates || 0),
+        skippedDuplicateEmails: Array.isArray(data?.skippedDuplicateEmails) ? data.skippedDuplicateEmails : [],
+      });
     } catch (e) {
-      setImportError(e?.response?.data?.message || "Import failed");
+      const message = e?.response?.data?.message || "Import failed";
+      if (importModalOpenRef.current) {
+        setImportError(message);
+      } else {
+        errorToast(message);
+      }
     } finally {
       setImportSubmitting(false);
     }
@@ -309,18 +353,8 @@ export default function ListDetailPage() {
   };
 
   const displayContacts = useMemo(() => {
-    let rows = [...contacts];
-    if (filterBy === "hasPhone") rows = rows.filter((c) => String(c.phone || "").trim().length > 0);
-    if (filterBy === "noPhone") rows = rows.filter((c) => String(c.phone || "").trim().length === 0);
-
-    rows.sort((a, b) => {
-      if (sortBy === "name") return String(a.name || "").localeCompare(String(b.name || ""));
-      const aTime = new Date(a.createdAt || 0).getTime();
-      const bTime = new Date(b.createdAt || 0).getTime();
-      return sortBy === "oldest" ? aTime - bTime : bTime - aTime;
-    });
-    return rows;
-  }, [contacts, filterBy, sortBy]);
+    return contacts;
+  }, [contacts]);
 
   const menuRowContact = useMemo(
     () =>
@@ -338,7 +372,7 @@ export default function ListDetailPage() {
           <div>
             <h2 className="dashboard-title">{listName || "List"}</h2>
             <p className="dashboard-subtitle">
-              {loading ? "Loading…" : `${contacts.length} contact${contacts.length === 1 ? "" : "s"} in this list · last updated today`}
+              {loading ? "Loading..." : `${contactTotal} contact${contactTotal === 1 ? "" : "s"} in this list · last updated today`}
             </p>
           </div>
         </div>
@@ -355,13 +389,30 @@ export default function ListDetailPage() {
         </div>
       </div>
 
-      {contacts.length ? (
+      {loading ? (
+        <div className="contacts-table-wrap list-detail-table-wrap">
+          <div className="list-detail-toolbar">
+            <div className="list-detail-toolbar-left">
+              <span className="skeleton-line skeleton-line--short" />
+              <span className="skeleton-line skeleton-line--short" />
+            </div>
+            <span className="skeleton-line skeleton-line--short" />
+          </div>
+          <TableSkeleton rows={8} columns={7} showAvatar />
+        </div>
+      ) : contactTotal ? (
         <div className="contacts-table-wrap list-detail-table-wrap">
           <div className="list-detail-toolbar">
             <div className="list-detail-toolbar-left">
               <label className="list-detail-control">
                 <span>Filter</span>
-                <select value={filterBy} onChange={(e) => setFilterBy(e.target.value)}>
+                <select
+                  value={filterBy}
+                  onChange={(e) => {
+                    setFilterBy(e.target.value);
+                    setPage(1);
+                  }}
+                >
                   <option value="all">All contacts</option>
                   <option value="hasPhone">With phone</option>
                   <option value="noPhone">Without phone</option>
@@ -369,20 +420,33 @@ export default function ListDetailPage() {
               </label>
               <label className="list-detail-control">
                 <span><ArrowUpDown size={13} /> Sort</span>
-                <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+                <select
+                  value={sortBy}
+                  onChange={(e) => {
+                    setSortBy(e.target.value);
+                    setPage(1);
+                  }}
+                >
                   <option value="newest">Newest</option>
                   <option value="oldest">Oldest</option>
                   <option value="name">Name A-Z</option>
                 </select>
               </label>
             </div>
-            <span>Showing {displayContacts.length} of {contacts.length}</span>
+            <span>
+              Showing{" "}
+              {pagination.total
+                ? `${(pagination.page - 1) * limit + 1}-${(pagination.page - 1) * limit + displayContacts.length}`
+                : "0"}{" "}
+              of {pagination.total}
+            </span>
           </div>
           <table className="contacts-table">
             <thead>
               <tr>
                 <th>NAME</th>
                 <th>EMAIL</th>
+                <th>COMPANY</th>
                 <th>PHONE</th>
                 <th>LIST</th>
                 <th>ADDED</th>
@@ -390,7 +454,7 @@ export default function ListDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {displayContacts.map((c, idx) => {
+              {displayContacts.length ? displayContacts.map((c, idx) => {
                 const menuOpen = openContactMenuRowId === c._id;
                 return (
                   <tr key={c._id}>
@@ -399,11 +463,14 @@ export default function ListDetailPage() {
                         <span className="list-contact-avatar">{getInitials(c.name, c.email)}</span>
                         <div>
                           <strong>{c.name || "Unknown"}</strong>
-                          <small>Contact #{String(idx + 1).padStart(4, "0")}</small>
+                          <small>Contact #{String((pagination.page - 1) * limit + idx + 1).padStart(4, "0")}</small>
                         </div>
                       </div>
                     </td>
                     <td><span className="list-cell-icon"><Mail size={13} /> {c.email}</span></td>
+                    <td className="company-cell">
+                      <span title={c.companyName || ""}>{c.companyName || "—"}</span>
+                    </td>
                     <td><span className="list-cell-icon"><Phone size={13} /> {c.phone || "—"}</span></td>
                     <td>
                       <span className="list-pill">{listName}</span>
@@ -428,9 +495,57 @@ export default function ListDetailPage() {
                     </td>
                   </tr>
                 );
-              })}
+              }) : (
+                <tr>
+                  <td colSpan={7}>
+                    <div className="contacts-empty-table-message">No contacts match this filter.</div>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
+          <div className="contacts-pagination campaign-recipients-pagination">
+            <div className="campaign-recipients-pagination-start">
+              <label className="campaign-recipients-per-page">
+                <span className="campaign-recipients-per-page-label">Rows per page</span>
+                <select
+                  value={limit}
+                  onChange={(e) => {
+                    setLimit(Number(e.target.value));
+                    setPage(1);
+                  }}
+                  aria-label="List contacts per page"
+                >
+                  {LIST_CONTACT_PAGE_LIMITS.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="campaign-recipients-page-meta" aria-live="polite">
+              Page {pagination.page} of {pagination.totalPages}
+            </p>
+            <div className="campaign-recipients-pagination-end">
+              <button
+                type="button"
+                className="campaign-recipients-page-btn"
+                disabled={!pagination.hasPrevPage}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className="campaign-recipients-page-btn"
+                disabled={!pagination.hasNextPage}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
       {openContactMenuRowId && contactMenuCoords && menuRowContact
@@ -453,20 +568,6 @@ export default function ListDetailPage() {
                 type="button"
                 className="contact-row-actions-item"
                 role="menuitem"
-                onClick={() => openEditFromMenu(menuRowContact)}
-              >
-                <span className="contact-row-actions-item__icon contact-row-actions-item__icon--primary" aria-hidden>
-                  <Pencil size={16} strokeWidth={2} />
-                </span>
-                <span className="contact-row-actions-item__text">
-                  <span className="contact-row-actions-item__title">Edit contact</span>
-                  <span className="contact-row-actions-item__hint">Name, email, phone</span>
-                </span>
-              </button>
-              <button
-                type="button"
-                className="contact-row-actions-item"
-                role="menuitem"
                 onClick={() => openRemoveFromMenu(menuRowContact)}
               >
                 <span className="contact-row-actions-item__icon contact-row-actions-item__icon--neutral" aria-hidden>
@@ -477,12 +578,27 @@ export default function ListDetailPage() {
                   <span className="contact-row-actions-item__hint">Keeps contact in account</span>
                 </span>
               </button>
+              <button
+                type="button"
+                className="contact-row-actions-item"
+                role="menuitem"
+                onClick={() => openEditFromMenu(menuRowContact)}
+              >
+                <span className="contact-row-actions-item__icon contact-row-actions-item__icon--primary" aria-hidden>
+                  <Pencil size={16} strokeWidth={2} />
+                </span>
+                <span className="contact-row-actions-item__text">
+                  <span className="contact-row-actions-item__title">Edit contact</span>
+                  <span className="contact-row-actions-item__hint">Name, email, phone</span>
+                </span>
+              </button>
               <div className="contact-row-actions-divider" role="separator" />
               <button
                 type="button"
-                className="contact-row-actions-item contact-row-actions-item--danger"
+                className="contact-row-actions-item contact-row-actions-item--danger contact-row-actions-item--disabled"
                 role="menuitem"
-                onClick={() => openDeleteFromMenu(menuRowContact)}
+                aria-disabled="true"
+                disabled
               >
                 <span className="contact-row-actions-item__icon contact-row-actions-item__icon--danger" aria-hidden>
                   <Trash2 size={16} strokeWidth={2} />
@@ -572,6 +688,19 @@ export default function ListDetailPage() {
                   onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
                   disabled={editSaving}
                   autoComplete="email"
+                />
+              </div>
+              <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="edit-contact-company">
+                  Company Name <span className="import-modal-optional">optional</span>
+                </label>
+                <input
+                  id="edit-contact-company"
+                  className="import-modal-input"
+                  value={editForm.companyName}
+                  onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })}
+                  disabled={editSaving}
+                  autoComplete="organization"
                 />
               </div>
               <div className="import-modal-field">
@@ -727,6 +856,20 @@ export default function ListDetailPage() {
                 />
               </div>
               <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="list-add-company">
+                  Company Name <span className="import-modal-optional">optional</span>
+                </label>
+                <input
+                  id="list-add-company"
+                  className="import-modal-input"
+                  value={addForm.companyName}
+                  onChange={(e) => setAddForm({ ...addForm, companyName: e.target.value })}
+                  placeholder="Acme Corp"
+                  disabled={addSubmitting}
+                  autoComplete="organization"
+                />
+              </div>
+              <div className="import-modal-field">
                 <label className="import-modal-label" htmlFor="list-add-phone">
                   Phone <span className="import-modal-required" aria-hidden="true">*</span>
                 </label>
@@ -772,7 +915,7 @@ export default function ListDetailPage() {
       {showImportModal ? (
         <div
           className="modal-overlay import-modal-overlay"
-          onClick={() => !importSubmitting && setShowImportModal(false)}
+          onClick={closeImportModal}
         >
           <div
             className="contact-modal small import-modal"
@@ -793,9 +936,8 @@ export default function ListDetailPage() {
               <button
                 type="button"
                 className="modal-close import-modal-close"
-                onClick={() => !importSubmitting && setShowImportModal(false)}
+                onClick={closeImportModal}
                 aria-label="Close"
-                disabled={importSubmitting}
               >
                 <X size={18} />
               </button>
@@ -830,15 +972,19 @@ export default function ListDetailPage() {
                   {importError}
                 </p>
               ) : null}
+              {importSubmitting ? (
+                <p className="import-modal-hint" role="status">
+                  Import is running in the background. You can close this window.
+                </p>
+              ) : null}
             </div>
             <div className="import-modal-footer">
               <button
                 type="button"
                 className="import-modal-btn-secondary"
-                onClick={() => setShowImportModal(false)}
-                disabled={importSubmitting}
+                onClick={closeImportModal}
               >
-                Cancel
+                {importSubmitting ? "Close" : "Cancel"}
               </button>
               <button
                 type="button"
@@ -847,6 +993,53 @@ export default function ListDetailPage() {
                 disabled={!importFile || importSubmitting}
               >
                 {importSubmitting ? "Importing…" : "Import"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {importResult ? (
+        <div className="modal-overlay import-modal-overlay" onClick={() => setImportResult(null)}>
+          <div
+            className="contact-modal import-modal import-result-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="list-import-result-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="import-result-head">
+              <span className="import-result-icon import-result-icon--success" aria-hidden>
+                <CheckCircle2 size={24} />
+              </span>
+              <div>
+                <p className="import-modal-eyebrow">Import result</p>
+                <h3 id="list-import-result-title">Import Completed Successfully</h3>
+              </div>
+            </div>
+            <div className="import-result-summary">
+              <div className="import-result-stat import-result-stat--success">
+                <CheckCircle2 size={18} aria-hidden />
+                <span><strong>{importResult.inserted}</strong> contacts imported into this list</span>
+              </div>
+              <div className="import-result-stat import-result-stat--warning">
+                <AlertTriangle size={18} aria-hidden />
+                <span><strong>{importResult.skippedDuplicates}</strong> duplicate contacts skipped</span>
+              </div>
+            </div>
+            {importResult.skippedDuplicateEmails.length ? (
+              <div className="import-result-duplicates">
+                <strong>Skipped duplicates</strong>
+                <ul>
+                  {importResult.skippedDuplicateEmails.map((email, index) => (
+                    <li key={`${email}-${index}`}>{email}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <div className="import-modal-footer">
+              <button type="button" className="import-modal-btn-primary" onClick={() => setImportResult(null)}>
+                Done
               </button>
             </div>
           </div>

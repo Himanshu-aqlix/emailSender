@@ -3,7 +3,8 @@ import { createPortal } from "react-dom";
 import {
   AlertTriangle,
   ArrowUpFromLine,
-  BarChart3,
+  Check,
+  CheckCircle2,
   ChevronDown,
   Download,
   FileSpreadsheet,
@@ -19,12 +20,13 @@ import {
   bulkAssignContactsToLists,
   createContact,
   deleteContact,
+  getContactOwners,
   getContacts,
-  postSampleContacts,
   updateContact,
   uploadContactsFile,
 } from "../services/contactService";
 import { createList, getLists } from "../services/listService";
+import { downloadContactSampleFile } from "../utils/downloadContactSampleFile";
 import { formatCreatedDateTime } from "../utils/formatDateTime";
 import {
   buildContactsQueryParams,
@@ -32,15 +34,37 @@ import {
   DEFAULT_CONTACT_FILTERS,
   getSortLabel,
 } from "../utils/contactsFilters";
-import { errorToast, infoToast, messageFromAxios, successToast } from "../utils/toast";
+import { errorToast, messageFromAxios, successToast } from "../utils/toast";
+import { formatDisplayName, initialsFromEmail, readStoredUser } from "../utils/userDisplay";
 import ContactsFilter from "../components/ContactsFilter";
+import { ButtonLoader, TableSkeleton } from "../components/Loaders";
 
 const CONTACTS_MENU_MIN_WIDTH = 220;
+const CONTACT_SCOPE_MENU_MIN_WIDTH = 280;
 const CONTACT_PAGE_LIMITS = [10, 25, 50, 100];
+
+const buildContactScopeOption = (user, currentUserId) => {
+  const id = String(user?.id || user?._id || "");
+  const email = String(user?.email || "").trim().toLowerCase();
+  const isCurrentUser = !!currentUserId && id === currentUserId;
+  return {
+    id,
+    email,
+    scope: isCurrentUser ? "mine" : "user",
+    label: isCurrentUser ? "My Contacts" : formatDisplayName(email),
+    description: isCurrentUser ? "Only contacts owned by you" : email,
+  };
+};
 
 export default function ContactsPage() {
   const [contacts, setContacts] = useState([]);
   const [lists, setLists] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [profile] = useState(readStoredUser);
+  const currentUserId = String(profile?.id || "");
+  const [contactOwners, setContactOwners] = useState([]);
+  const [contactVisibility, setContactVisibility] = useState("mine");
+  const [selectedOwnerId, setSelectedOwnerId] = useState("");
   const [query, setQuery] = useState("");
   const [appliedFilters, setAppliedFilters] = useState(() => ({ ...DEFAULT_CONTACT_FILTERS }));
   const [filterDraft, setFilterDraft] = useState(() => ({ ...DEFAULT_CONTACT_FILTERS }));
@@ -50,6 +74,7 @@ export default function ContactsPage() {
   /** Total contacts for this account (ignores search `q`). Used to distinguish “no data” vs “no search hits”. */
   const [accountContactTotal, setAccountContactTotal] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
+  const [showContactScopeMenu, setShowContactScopeMenu] = useState(false);
   const [showBulkUpdate, setShowBulkUpdate] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -59,12 +84,14 @@ export default function ContactsPage() {
   const [openContactMenuRowId, setOpenContactMenuRowId] = useState(null);
   const [contactMenuCoords, setContactMenuCoords] = useState(null);
   const contactsMenuTriggerRef = useRef(null);
+  const contactScopeTriggerRef = useRef(null);
+  const [contactScopeMenuCoords, setContactScopeMenuCoords] = useState(null);
 
   const [editTarget, setEditTarget] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", email: "", phone: "" });
+  const [editForm, setEditForm] = useState({ name: "", email: "", companyName: "", phone: "" });
   const [editError, setEditError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
-  const [addForm, setAddForm] = useState({ name: "", email: "", phone: "", listId: "", listName: "", creatingNewList: false });
+  const [addForm, setAddForm] = useState({ name: "", email: "", companyName: "", phone: "", listId: "", listName: "", creatingNewList: false });
   const [importListInput, setImportListInput] = useState("");
   const [importListPicked, setImportListPicked] = useState(null);
   const [importSuggestOpen, setImportSuggestOpen] = useState(false);
@@ -72,6 +99,7 @@ export default function ContactsPage() {
   const [importModalError, setImportModalError] = useState("");
   const [importSelectedFile, setImportSelectedFile] = useState(null);
   const [importSubmitting, setImportSubmitting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
   const [error, setError] = useState("");
   const [addContactSubmitting, setAddContactSubmitting] = useState(false);
   const importFileInputRef = useRef(null);
@@ -81,6 +109,7 @@ export default function ContactsPage() {
   listsRef.current = lists;
   const bulkUpdateWrapRef = useRef(null);
   const filterWrapRef = useRef(null);
+  const contactScopeWrapRef = useRef(null);
   const [selectedContactIds, setSelectedContactIds] = useState([]);
   const [bulkSelectedLists, setBulkSelectedLists] = useState([]);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
@@ -88,10 +117,10 @@ export default function ContactsPage() {
   const [bulkNotice, setBulkNotice] = useState("");
   const [bulkToast, setBulkToast] = useState("");
   const [importMenuOpen, setImportMenuOpen] = useState(false);
-  const [showSampleConfirm, setShowSampleConfirm] = useState(false);
-  const [sampleSubmitting, setSampleSubmitting] = useState(false);
+  const [showSampleTemplateModal, setShowSampleTemplateModal] = useState(false);
   const importWrapToolbarRef = useRef(null);
   const importWrapEmptyRef = useRef(null);
+  const importModalOpenRef = useRef(false);
 
   const filtersSignature = useMemo(
     () =>
@@ -100,43 +129,98 @@ export default function ContactsPage() {
         datePreset: appliedFilters.datePreset,
         customDateFrom: appliedFilters.customDateFrom,
         customDateTo: appliedFilters.customDateTo,
-      }),
+    }),
     [appliedFilters]
   );
 
+  const contactScopeOptions = useMemo(() => {
+    const allOption = {
+      id: "",
+      email: "",
+      scope: "all",
+      label: "All Contacts",
+      description: "See contacts from the shared workspace",
+    };
+    const mapped = contactOwners
+      .map((user) => buildContactScopeOption(user, currentUserId))
+      .filter((option) => option.id && option.email);
+    const mineOption =
+      mapped.find((option) => option.scope === "mine") || {
+        id: currentUserId,
+        email: String(profile?.email || "").trim().toLowerCase(),
+        scope: "mine",
+        label: "My Contacts",
+        description: "Only contacts owned by you",
+      };
+    const teammateOptions = mapped
+      .filter((option) => option.scope === "user")
+      .sort((a, b) => a.label.localeCompare(b.label));
+    return [mineOption, allOption, ...teammateOptions];
+  }, [contactOwners, currentUserId, profile?.email]);
+
+  const selectedContactScope = useMemo(() => {
+    if (contactVisibility === "all") {
+      return contactScopeOptions.find((option) => option.scope === "all") || contactScopeOptions[0];
+    }
+    if (contactVisibility === "user") {
+      return (
+        contactScopeOptions.find((option) => option.scope === "user" && option.id === selectedOwnerId) ||
+        contactScopeOptions[0]
+      );
+    }
+    return contactScopeOptions.find((option) => option.scope === "mine") || contactScopeOptions[0];
+  }, [contactScopeOptions, contactVisibility, selectedOwnerId]);
+
+  const dropdownContactScopeOptions = useMemo(
+    () => contactScopeOptions.filter((option) => option.scope !== "all"),
+    [contactScopeOptions]
+  );
+
   const load = async () => {
-    const params = buildContactsQueryParams({ page, limit, q: query, filters: appliedFilters });
-    const qTrim = query.trim();
+    setLoading(true);
+    const params = buildContactsQueryParams({
+      page,
+      limit,
+      q: query,
+      filters: appliedFilters,
+      visibility: contactVisibility,
+      ownerId: selectedOwnerId,
+    });
 
     const countParams = new URLSearchParams();
     countParams.set("page", "1");
     countParams.set("limit", "1");
+    countParams.set("visibility", "all");
 
-    const promises = [getContacts(params.toString()), getLists()];
-    if (qTrim) {
-      promises.push(getContacts(countParams.toString()));
-    }
+    const promises = [getContacts(params.toString()), getLists(), getContactOwners(), getContacts(countParams.toString())];
 
-    const results = await Promise.all(promises);
-    const contactsRes = results[0];
-    const listsRes = results[1];
-    const data = contactsRes.data || {};
-    setContacts(data.items || []);
-    setPagination(data.pagination || { page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false });
-    setLists(listsRes.data || []);
-
-    if (qTrim) {
-      const countRes = results[2];
+    try {
+      const results = await Promise.all(promises);
+      const contactsRes = results[0];
+      const listsRes = results[1];
+      const ownersRes = results[2];
+      const countRes = results[3];
+      const data = contactsRes.data || {};
+      setContacts(data.items || []);
+      setPagination(data.pagination || { page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false });
+      setLists(listsRes.data || []);
+      setContactOwners(Array.isArray(ownersRes.data) ? ownersRes.data : []);
       const raw = countRes?.data?.pagination?.total;
       setAccountContactTotal(typeof raw === "number" ? raw : 0);
-    } else {
-      const raw = data.pagination?.total;
-      setAccountContactTotal(typeof raw === "number" ? raw : 0);
+    } catch (e) {
+      setContacts([]);
+      setPagination({ page: 1, totalPages: 1, total: 0, hasNextPage: false, hasPrevPage: false });
+      setLists([]);
+      setContactOwners([]);
+      setAccountContactTotal(0);
+      errorToast(messageFromAxios(e, "Could not load contacts"));
+    } finally {
+      setLoading(false);
     }
   };
   useEffect(() => {
     load();
-  }, [page, limit, query, filtersSignature]);
+  }, [page, limit, query, filtersSignature, contactVisibility, selectedOwnerId]);
   useEffect(() => {
     const onRefresh = () => {
       setPage(1);
@@ -162,6 +246,7 @@ export default function ContactsPage() {
   };
 
   useEffect(() => {
+    importModalOpenRef.current = showImportModal;
     if (!showImportModal) return undefined;
     clearImportSuggestBlurTimer();
     setImportModalError("");
@@ -285,6 +370,28 @@ export default function ContactsPage() {
   }, [importMenuOpen]);
 
   useEffect(() => {
+    if (!showContactScopeMenu) return undefined;
+    const onDown = (e) => {
+      if (
+        contactScopeWrapRef.current?.contains(e.target) ||
+        e.target.closest?.("[data-contact-scope-dropdown-portal]")
+      ) {
+        return;
+      }
+      setShowContactScopeMenu(false);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") setShowContactScopeMenu(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [showContactScopeMenu]);
+
+  useEffect(() => {
     if (!bulkToast) return undefined;
     const t = setTimeout(() => setBulkToast(""), 4000);
     return () => clearTimeout(t);
@@ -318,6 +425,34 @@ export default function ContactsPage() {
     };
   }, [openContactMenuRowId]);
 
+  useLayoutEffect(() => {
+    if (!showContactScopeMenu) {
+      setContactScopeMenuCoords(null);
+      return undefined;
+    }
+    const layoutMenu = () => {
+      const trigger = contactScopeTriggerRef.current;
+      if (!trigger?.getBoundingClientRect) return;
+      const rect = trigger.getBoundingClientRect();
+      const gutter = 10;
+      let left = rect.left;
+      left = Math.max(gutter, Math.min(left, window.innerWidth - CONTACT_SCOPE_MENU_MIN_WIDTH - gutter));
+      let top = rect.bottom + 8;
+      const estHeight = 320;
+      if (top + estHeight > window.innerHeight - gutter) {
+        top = Math.max(gutter, rect.top - estHeight - 8);
+      }
+      setContactScopeMenuCoords({ top, left });
+    };
+    layoutMenu();
+    window.addEventListener("scroll", layoutMenu, true);
+    window.addEventListener("resize", layoutMenu);
+    return () => {
+      window.removeEventListener("scroll", layoutMenu, true);
+      window.removeEventListener("resize", layoutMenu);
+    };
+  }, [showContactScopeMenu]);
+
   useEffect(() => {
     if (!openContactMenuRowId) return undefined;
     const onDoc = (e) => {
@@ -347,6 +482,7 @@ export default function ContactsPage() {
       setEditForm({
         name: editTarget.name || "",
         email: editTarget.email || "",
+        companyName: editTarget.companyName || "",
         phone: editTarget.phone || "",
       });
       setEditError("");
@@ -360,6 +496,25 @@ export default function ContactsPage() {
       setBulkError("");
     }
   }, [selectedContactIds.length]);
+
+  useEffect(() => {
+    setSelectedContactIds([]);
+    setShowBulkUpdate(false);
+    setBulkSelectedLists([]);
+  }, [contactVisibility, selectedOwnerId]);
+
+  useEffect(() => {
+    if (contactVisibility !== "user") return;
+    if (!selectedOwnerId) {
+      setContactVisibility("mine");
+      return;
+    }
+    const hasSelectedOwner = contactScopeOptions.some((option) => option.scope === "user" && option.id === selectedOwnerId);
+    if (!hasSelectedOwner) {
+      setContactVisibility("mine");
+      setSelectedOwnerId("");
+    }
+  }, [contactScopeOptions, contactVisibility, selectedOwnerId]);
 
   const openImportModal = () => {
     setShowImportModal(true);
@@ -380,33 +535,24 @@ export default function ContactsPage() {
 
   const openSampleConfirmFromMenu = () => {
     setImportMenuOpen(false);
-    setShowSampleConfirm(true);
+    setShowSampleTemplateModal(true);
   };
 
-  const confirmLoadSampleData = async () => {
-    if (sampleSubmitting) return;
-    setSampleSubmitting(true);
-    try {
-      const res = await postSampleContacts();
-      const payload = res.data || {};
-      setShowSampleConfirm(false);
-      if (payload.alreadyExists) {
-        infoToast(payload.message || "Sample data already added");
-      } else {
-        successToast(payload.message || "Sample data added successfully");
-      }
-      await load();
-      window.dispatchEvent(new Event("lists:refresh"));
-      window.dispatchEvent(new Event("contacts:refresh"));
-    } catch (e) {
-      errorToast(messageFromAxios(e, "Could not load sample data."));
-    } finally {
-      setSampleSubmitting(false);
-    }
+  const handleDownloadSampleFile = () => {
+    downloadContactSampleFile();
+    setShowSampleTemplateModal(false);
   };
 
   const pickImportFile = () => {
     importFileInputRef.current?.click();
+  };
+
+  const closeImportModal = () => {
+    importModalOpenRef.current = false;
+    setShowImportModal(false);
+    setImportSuggestOpen(false);
+    setImportSuggestHighlight(-1);
+    clearImportSuggestBlurTimer();
   };
 
   const handleImportConfirm = async () => {
@@ -438,26 +584,46 @@ export default function ContactsPage() {
       const fd = new FormData();
       fd.append("file", importSelectedFile);
       if (listId) fd.append("listId", listId);
-      await uploadContactsFile(fd);
+      const { data } = await uploadContactsFile(fd);
       setPage(1);
       setShowImportModal(false);
       await load();
       window.dispatchEvent(new Event("lists:refresh"));
+      window.dispatchEvent(new Event("contacts:refresh"));
+      setImportSelectedFile(null);
+      setImportResult({
+        inserted: Number(data?.inserted || data?.imported || 0),
+        skippedDuplicates: Number(data?.skippedDuplicates || 0),
+        skippedDuplicateEmails: Array.isArray(data?.skippedDuplicateEmails) ? data.skippedDuplicateEmails : [],
+      });
     } catch (e) {
-      setImportModalError(e?.response?.data?.message || e?.message || "Import failed.");
+      const message = e?.response?.data?.message || e?.message || "Import failed.";
+      if (importModalOpenRef.current) {
+        setImportModalError(message);
+      } else {
+        errorToast(message);
+      }
     } finally {
       setImportSubmitting(false);
     }
   };
 
   const displayRows = contacts;
+  const isOwnedByCurrentUser = useCallback(
+    (contact) => String(contact?.owner?._id || contact?.owner?.id || contact?.owner || "") === currentUserId,
+    [currentUserId]
+  );
   const hasAnyContacts = accountContactTotal > 0;
   const searchTrim = query.trim();
   const hasActiveFiltersApplied = countActiveFilterKeys(appliedFilters) > 0;
   const isSearchWithNoHits = hasAnyContacts && !displayRows.length && searchTrim.length > 0;
   const isFilterEmptyState = hasAnyContacts && !displayRows.length && !searchTrim.length && hasActiveFiltersApplied;
-  const displayedIds = useMemo(() => displayRows.map((c) => String(c._id)), [displayRows]);
-  const allDisplayedSelected = displayedIds.length > 0 && displayedIds.every((id) => selectedContactIds.includes(id));
+  const selectableDisplayedIds = useMemo(
+    () => displayRows.filter((c) => isOwnedByCurrentUser(c)).map((c) => String(c._id)),
+    [displayRows, isOwnedByCurrentUser]
+  );
+  const allDisplayedSelected =
+    selectableDisplayedIds.length > 0 && selectableDisplayedIds.every((id) => selectedContactIds.includes(id));
 
   const activeFilterChips = useMemo(() => {
     const out = [];
@@ -523,6 +689,7 @@ export default function ContactsPage() {
     try {
       const payload = {
         name: addForm.name.trim(),
+        companyName: addForm.companyName.trim(),
         email: emailTrim,
         phone: addForm.phone.trim(),
       };
@@ -532,7 +699,7 @@ export default function ContactsPage() {
       }
       await createContact(payload);
       setShowAddModal(false);
-      setAddForm({ name: "", email: "", phone: "", listId: "", listName: "", creatingNewList: false });
+      setAddForm({ name: "", email: "", companyName: "", phone: "", listId: "", listName: "", creatingNewList: false });
       setPage(1);
       await load();
       window.dispatchEvent(new Event("lists:refresh"));
@@ -586,6 +753,7 @@ export default function ContactsPage() {
       await updateContact(editTarget._id, {
         name: nameTrim,
         email: emailTrim,
+        companyName: editForm.companyName.trim(),
         phone: phoneTrim,
       });
       setEditTarget(null);
@@ -628,6 +796,8 @@ export default function ContactsPage() {
   };
 
   const toggleContactSelection = (contactId) => {
+    const target = displayRows.find((contact) => String(contact._id) === String(contactId));
+    if (!isOwnedByCurrentUser(target)) return;
     setSelectedContactIds((prev) => {
       const id = String(contactId);
       return prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
@@ -637,9 +807,9 @@ export default function ContactsPage() {
   const toggleAllDisplayed = () => {
     setSelectedContactIds((prev) => {
       if (allDisplayedSelected) {
-        return prev.filter((id) => !displayedIds.includes(id));
+        return prev.filter((id) => !selectableDisplayedIds.includes(id));
       }
-      return Array.from(new Set([...prev, ...displayedIds]));
+      return Array.from(new Set([...prev, ...selectableDisplayedIds]));
     });
   };
 
@@ -678,11 +848,20 @@ export default function ContactsPage() {
       .join("; ");
   };
 
+  const applyContactScopeOption = (option) => {
+    const nextScope = option?.scope || "mine";
+    setContactVisibility(nextScope);
+    setSelectedOwnerId(nextScope === "user" ? String(option?.id || "") : "");
+    setPage(1);
+    setShowContactScopeMenu(false);
+  };
+
   const exportCsv = () => {
-    const header = ["name", "email", "phone", "list", "added"];
+    const header = ["name", "email", "companyName", "phone", "list", "added"];
     const rows = displayRows.map((c) => [
       c.name || "",
       c.email || "",
+      c.companyName || "",
       c.phone || "",
       listNamesForCsv(c),
       formatCreatedDateTime(c.createdAt),
@@ -727,15 +906,115 @@ export default function ContactsPage() {
                 </button>
                 <button type="button" className="contacts-import-dropdown-item" role="menuitem" onClick={openSampleConfirmFromMenu}>
                   <span aria-hidden className="contacts-import-dropdown-emoji">
-                    <BarChart3 size={15} strokeWidth={2} />
+                    <FileSpreadsheet size={15} strokeWidth={2} />
                   </span>
-                  Use Sample Data
+                  Download Sample File
                 </button>
               </div>
             ) : null}
           </div>
         </div>
       </div>
+
+      <div className="contacts-scope-row">
+        <div className="toolbar-dropdown-anchor contacts-scope-anchor" ref={contactScopeWrapRef}>
+          <div className="contacts-scope-controls">
+            <button
+              type="button"
+              className={`ghost-btn contacts-scope-trigger contacts-scope-trigger--all${contactVisibility === "all" ? " is-selected" : ""}`}
+              onClick={() =>
+                applyContactScopeOption({
+                  scope: "all",
+                  id: "",
+                  label: "All Contacts",
+                  description: "See contacts from the shared workspace",
+                })
+              }
+            >
+              All Contacts
+            </button>
+          <button
+            ref={contactScopeTriggerRef}
+            type="button"
+            className={`ghost-btn contacts-scope-trigger contacts-scope-trigger--dropdown${
+              contactVisibility !== "all" ? " is-selected" : ""
+            }`}
+            aria-expanded={showContactScopeMenu}
+            aria-haspopup="menu"
+            onClick={() => {
+              setShowFilters(false);
+              setShowBulkUpdate(false);
+              setShowContactScopeMenu((prev) => !prev);
+            }}
+          >
+            <Users size={14} aria-hidden />
+            {contactVisibility === "all" ? "My Contacts" : selectedContactScope?.label || "My Contacts"}
+            <ChevronDown size={14} aria-hidden className={`contacts-scope-trigger-chevron${showContactScopeMenu ? " is-open" : ""}`} />
+          </button>
+          </div>
+          <div className="contacts-scope-meta">
+            <strong>Contact scope</strong>
+            <span>{selectedContactScope?.description || "Only contacts owned by you"}</span>
+          </div>
+        </div>
+      </div>
+      {showContactScopeMenu && contactScopeMenuCoords
+        ? createPortal(
+            <div
+              data-contact-scope-dropdown-portal
+              className="contacts-scope-dropdown"
+              role="menu"
+              aria-label="Contact scope options"
+              style={{
+                position: "fixed",
+                top: contactScopeMenuCoords.top,
+                left: contactScopeMenuCoords.left,
+                minWidth: CONTACT_SCOPE_MENU_MIN_WIDTH,
+                zIndex: 10070,
+              }}
+            >
+              <div className="contacts-scope-dropdown-head">
+                <strong>Choose Contact Scope</strong>
+                <span>Switch between your contacts and a specific teammate.</span>
+              </div>
+              <div className="contacts-scope-dropdown-list">
+                {dropdownContactScopeOptions.map((option) => {
+                  const isSelected =
+                    option.scope === contactVisibility &&
+                    (option.scope !== "user" || option.id === selectedOwnerId);
+                  const avatarText = option.scope === "mine" ? "MC" : initialsFromEmail(option.email || option.label || "");
+                  return (
+                    <button
+                      key={`${option.scope}-${option.id || "all"}`}
+                      type="button"
+                      className={`contacts-scope-option${isSelected ? " is-selected" : ""}`}
+                      role="menuitemradio"
+                      aria-checked={isSelected}
+                      onClick={() => applyContactScopeOption(option)}
+                    >
+                      <span
+                        className={`contacts-scope-option-avatar${isSelected ? " is-selected" : ""}`}
+                        aria-hidden
+                      >
+                        {avatarText}
+                      </span>
+                      <span className="contacts-scope-option-copy">
+                        <strong>{option.label}</strong>
+                        <span>{option.description}</span>
+                      </span>
+                      {isSelected ? (
+                        <span className="contacts-scope-option-check" aria-hidden>
+                          <Check size={18} strokeWidth={2.4} />
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
 
       {selectedContactIds.length ? (
         <div className="contacts-bulk-row">
@@ -763,7 +1042,9 @@ export default function ContactsPage() {
                 <label>Select Lists</label>
                 <p className="bulk-update-sub">Choose one or more lists. Selected contacts are added (not replaced).</p>
                 <div className="filters-list-select">
-                  {!lists.length ? (
+                  {loading ? (
+                    <p className="bulk-update-empty-lists muted"><ButtonLoader label="Loading lists" /></p>
+                  ) : !lists.length ? (
                     <p className="bulk-update-empty-lists muted">No lists yet. Create a list first.</p>
                   ) : (
                     lists.map((l) => {
@@ -805,12 +1086,20 @@ export default function ContactsPage() {
       {bulkError ? <p className="auth-error">{bulkError}</p> : null}
       {bulkNotice ? <p className="helper">{bulkNotice}</p> : null}
 
-      {hasAnyContacts ? (
+      {loading ? (
+        <div className="contacts-table-wrap">
+          <div className="contacts-toolbar">
+            <span className="skeleton-line skeleton-line--medium" />
+            <span className="skeleton-line skeleton-line--short" />
+          </div>
+          <TableSkeleton rows={8} columns={8} showAvatar />
+        </div>
+      ) : hasAnyContacts ? (
         <div className="contacts-table-wrap">
           <div className="contacts-toolbar">
             <input
               className="contacts-search"
-              placeholder="Search by name, email, or phone"
+              placeholder="Search by name, company, email, or phone"
               value={query}
               onChange={(e) => {
                 setPage(1);
@@ -868,10 +1157,17 @@ export default function ContactsPage() {
             <thead>
               <tr>
                 <th>
-                  <input type="checkbox" checked={allDisplayedSelected} onChange={toggleAllDisplayed} />
+                  <input
+                    type="checkbox"
+                    checked={allDisplayedSelected}
+                    onChange={toggleAllDisplayed}
+                    disabled={!selectableDisplayedIds.length}
+                    title={selectableDisplayedIds.length ? "Select your contacts on this page" : "No editable contacts in this view"}
+                  />
                 </th>
                 <th>NAME</th>
                 <th>EMAIL</th>
+                <th>COMPANY</th>
                 <th>PHONE</th>
                 <th>LIST</th>
                 <th>ADDED</th>
@@ -881,17 +1177,23 @@ export default function ContactsPage() {
             <tbody>
               {displayRows.map((c) => {
                 const menuOpen = String(openContactMenuRowId) === String(c._id);
+                const canManageContact = isOwnedByCurrentUser(c);
                 return (
                   <tr key={c._id}>
                     <td>
                       <input
                         type="checkbox"
+                        disabled={!canManageContact}
                         checked={selectedContactIds.includes(String(c._id))}
                         onChange={() => toggleContactSelection(c._id)}
+                        title={canManageContact ? "Select contact" : "Only the owner can update this contact"}
                       />
                     </td>
                     <td className="name-cell">{c.name || "Unknown"}</td>
                     <td>{c.email}</td>
+                    <td className="company-cell">
+                      <span title={c.companyName || ""}>{c.companyName || "—"}</span>
+                    </td>
                     <td>{c.phone || "—"}</td>
                     <td>
                       <span className="list-pill">
@@ -906,9 +1208,11 @@ export default function ContactsPage() {
                         <button
                           type="button"
                           className="contact-row-actions-trigger"
+                          disabled={!canManageContact}
                           aria-expanded={menuOpen}
                           aria-haspopup="menu"
-                          aria-label="Contact actions"
+                          aria-label={canManageContact ? "Contact actions" : "Read-only contact"}
+                          title={canManageContact ? "Manage contact" : "Only the owner can edit or delete this contact"}
                           onClick={(e) => {
                             if (!menuOpen) contactsMenuTriggerRef.current = e.currentTarget;
                             setOpenContactMenuRowId(menuOpen ? null : c._id);
@@ -1062,9 +1366,9 @@ export default function ContactsPage() {
                   </button>
                   <button type="button" className="contacts-import-dropdown-item" role="menuitem" onClick={openSampleConfirmFromMenu}>
                     <span aria-hidden className="contacts-import-dropdown-emoji">
-                      <BarChart3 size={15} strokeWidth={2} />
+                      <FileSpreadsheet size={15} strokeWidth={2} />
                     </span>
-                    Use Sample Data
+                    Download Sample File
                   </button>
                 </div>
               ) : null}
@@ -1131,6 +1435,20 @@ export default function ContactsPage() {
                   onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
                   disabled={addContactSubmitting}
                   autoComplete="email"
+                />
+              </div>
+              <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="add-contact-company">
+                  Company Name <span className="import-modal-optional">optional</span>
+                </label>
+                <input
+                  id="add-contact-company"
+                  className="import-modal-input"
+                  value={addForm.companyName}
+                  onChange={(e) => setAddForm({ ...addForm, companyName: e.target.value })}
+                  placeholder="Acme Corp"
+                  disabled={addContactSubmitting}
+                  autoComplete="organization"
                 />
               </div>
               <div className="import-modal-field">
@@ -1298,6 +1616,19 @@ export default function ContactsPage() {
                 />
               </div>
               <div className="import-modal-field">
+                <label className="import-modal-label" htmlFor="contacts-page-edit-company">
+                  Company Name <span className="import-modal-optional">optional</span>
+                </label>
+                <input
+                  id="contacts-page-edit-company"
+                  className="import-modal-input"
+                  value={editForm.companyName}
+                  onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })}
+                  disabled={editSaving}
+                  autoComplete="organization"
+                />
+              </div>
+              <div className="import-modal-field">
                 <label className="import-modal-label" htmlFor="contacts-page-edit-phone">
                   Phone <span className="import-modal-required" aria-hidden="true">*</span>
                 </label>
@@ -1384,13 +1715,13 @@ export default function ContactsPage() {
         </div>
       ) : null}
 
-      {showSampleConfirm ? (
+      {showSampleTemplateModal ? (
         <div
           className="modal-overlay import-modal-overlay"
-          onClick={() => !sampleSubmitting && setShowSampleConfirm(false)}
+          onClick={() => setShowSampleTemplateModal(false)}
         >
           <div
-            className="contact-modal import-modal sample-data-modal contacts-sample-modal-pro"
+            className="contact-modal import-modal sample-data-modal contacts-sample-modal-pro contacts-sample-template-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="sample-data-title"
@@ -1400,26 +1731,31 @@ export default function ContactsPage() {
             <div className="import-modal-header import-modal-header--professional">
               <div className="import-modal-header-main">
                 <div className="import-modal-header-icon contacts-sample-modal-icon" aria-hidden>
-                  <BarChart3 size={24} strokeWidth={2} />
+                  <FileSpreadsheet size={24} strokeWidth={2} />
                 </div>
                 <div className="import-modal-header-copy">
-                  <p className="import-modal-eyebrow">Preview data</p>
-                  <h3 id="sample-data-title">Load sample contacts?</h3>
+                  <p className="import-modal-eyebrow">Sample template</p>
+                  <h3 id="sample-data-title">Download Sample Contact File</h3>
                   <p id="sample-data-desc" className="import-modal-lede">
-                    We’ll add demo contacts so you can try lists, filtering, and campaigns without risking real recipients.
+                    Download a ready-to-use contact import template with the correct column structure. Fill your
+                    contact details and upload the file to import contacts easily.
                   </p>
-                  <ul className="contacts-sample-modal-points">
-                    <li>8 curated contacts with name, email, and phone</li>
-                    <li>Random list assignments using your existing lists</li>
-                  </ul>
+                  <div className="contacts-sample-template-card">
+                    <span className="contacts-sample-template-pill">
+                      <Download size={14} strokeWidth={2} aria-hidden />
+                      Header-only CSV
+                    </span>
+                    <p className="contacts-sample-template-note">
+                      Includes the supported headers: Name, Email, Phone, and Company Name.
+                    </p>
+                  </div>
                 </div>
               </div>
               <button
                 type="button"
                 className="modal-close import-modal-close"
-                onClick={() => !sampleSubmitting && setShowSampleConfirm(false)}
+                onClick={() => setShowSampleTemplateModal(false)}
                 aria-label="Close"
-                disabled={sampleSubmitting}
               >
                 <X size={18} />
               </button>
@@ -1428,18 +1764,17 @@ export default function ContactsPage() {
               <button
                 type="button"
                 className="import-modal-btn-secondary"
-                onClick={() => !sampleSubmitting && setShowSampleConfirm(false)}
-                disabled={sampleSubmitting}
+                onClick={() => setShowSampleTemplateModal(false)}
               >
                 Cancel
               </button>
               <button
                 type="button"
-                className="import-modal-btn-primary import-modal-btn-primary--gradient"
-                onClick={confirmLoadSampleData}
-                disabled={sampleSubmitting}
+                className="import-modal-btn-primary import-modal-btn-primary--gradient contacts-sample-template-download"
+                onClick={handleDownloadSampleFile}
               >
-                {sampleSubmitting ? "Loading…" : "Load sample"}
+                <Download size={16} strokeWidth={2} aria-hidden />
+                Download Sample File
               </button>
             </div>
           </div>
@@ -1447,7 +1782,7 @@ export default function ContactsPage() {
       ) : null}
 
       {showImportModal ? (
-        <div className="modal-overlay import-modal-overlay" onClick={() => !importSubmitting && setShowImportModal(false)}>
+        <div className="modal-overlay import-modal-overlay" onClick={closeImportModal}>
           <div
             className="contact-modal import-modal contacts-import-modal-pro"
             role="dialog"
@@ -1474,9 +1809,8 @@ export default function ContactsPage() {
               <button
                 type="button"
                 className="modal-close import-modal-close"
-                onClick={() => !importSubmitting && setShowImportModal(false)}
+                onClick={closeImportModal}
                 aria-label="Close"
-                disabled={importSubmitting}
               >
                 <X size={18} />
               </button>
@@ -1588,15 +1922,19 @@ export default function ContactsPage() {
                   <p className="import-modal-hint">Accepted: .xlsx, .xls. File is processed only after you confirm.</p>
                 )}
               </div>
+              {importSubmitting ? (
+                <p className="import-modal-hint" role="status">
+                  Import is running in the background. You can close this window.
+                </p>
+              ) : null}
             </div>
             <div className="import-modal-footer contacts-import-modal-footer">
               <button
                 type="button"
                 className="import-modal-btn-secondary"
-                onClick={() => setShowImportModal(false)}
-                disabled={importSubmitting}
+                onClick={closeImportModal}
               >
-                Cancel
+                {importSubmitting ? "Close" : "Cancel"}
               </button>
               <button
                 type="button"
@@ -1605,6 +1943,53 @@ export default function ContactsPage() {
                 disabled={importSubmitting || !importSelectedFile}
               >
                 {importSubmitting ? "Importing…" : "Run import"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {importResult ? (
+        <div className="modal-overlay import-modal-overlay" onClick={() => setImportResult(null)}>
+          <div
+            className="contact-modal import-modal import-result-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="contacts-import-result-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="import-result-head">
+              <span className="import-result-icon import-result-icon--success" aria-hidden>
+                <CheckCircle2 size={24} />
+              </span>
+              <div>
+                <p className="import-modal-eyebrow">Import result</p>
+                <h3 id="contacts-import-result-title">Import Completed Successfully</h3>
+              </div>
+            </div>
+            <div className="import-result-summary">
+              <div className="import-result-stat import-result-stat--success">
+                <CheckCircle2 size={18} aria-hidden />
+                <span><strong>{importResult.inserted}</strong> contacts imported</span>
+              </div>
+              <div className="import-result-stat import-result-stat--warning">
+                <AlertTriangle size={18} aria-hidden />
+                <span><strong>{importResult.skippedDuplicates}</strong> duplicate contacts skipped</span>
+              </div>
+            </div>
+            {importResult.skippedDuplicateEmails.length ? (
+              <div className="import-result-duplicates">
+                <strong>Skipped duplicates</strong>
+                <ul>
+                  {importResult.skippedDuplicateEmails.map((email, index) => (
+                    <li key={`${email}-${index}`}>{email}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <div className="import-modal-footer">
+              <button type="button" className="import-modal-btn-primary import-modal-btn-primary--gradient" onClick={() => setImportResult(null)}>
+                Done
               </button>
             </div>
           </div>

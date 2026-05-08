@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nodemon src/runLocal.js",
     "start": "node src/runLocal.js",
+    "seed:admin": "node src/scripts/seedAdmin.js",
     "deploy": "serverless deploy"
   },
   "keywords": [],

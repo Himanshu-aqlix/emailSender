@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
-  Bell,
   LayoutDashboard,
   Users,
   FileText,
@@ -16,6 +15,7 @@ import {
   Trash2,
   PanelLeftClose,
   PanelLeftOpen,
+  ShieldCheck,
 } from "lucide-react";
 import { getMe } from "../services/authService";
 import { deleteList, getLists, renameList } from "../services/listService";
@@ -39,6 +39,7 @@ export default function AppLayout() {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [listsOpen, setListsOpen] = useState(true);
   const [lists, setLists] = useState([]);
+  const [listsLoading, setListsLoading] = useState(true);
   const [activeListMenuId, setActiveListMenuId] = useState("");
   const [deleteListTarget, setDeleteListTarget] = useState(null);
   const [deleteListSubmitting, setDeleteListSubmitting] = useState(false);
@@ -90,12 +91,16 @@ export default function AppLayout() {
   };
 
   const refreshLists = useCallback(() => {
+    setListsLoading(true);
     getLists()
       .then(({ data }) => {
         setLists(Array.isArray(data) ? data : []);
       })
       .catch(() => {
         setLists([]);
+      })
+      .finally(() => {
+        setListsLoading(false);
       });
   }, []);
 
@@ -142,6 +147,7 @@ export default function AppLayout() {
       templates: "Templates",
       campaigns: "Campaigns",
       analytics: "Analytics",
+      admin: "User Management",
     };
     const label = names[seg];
     document.title = label ? `${label} · Sendrofy` : "Sendrofy";
@@ -301,7 +307,13 @@ export default function AppLayout() {
             </button>
             {listsOpen && !sidebarCollapsedEffective ? (
               <div className="app-sidebar-lists-sub">
-                {lists.length === 0 ? (
+                {listsLoading ? (
+                  <div className="app-sidebar-lists-skeleton" aria-label="Loading lists">
+                    <span className="skeleton-line" />
+                    <span className="skeleton-line skeleton-line--medium" />
+                    <span className="skeleton-line skeleton-line--short" />
+                  </div>
+                ) : lists.length === 0 ? (
                   <span className="app-sidebar-lists-empty">No lists yet</span>
                 ) : (
                   lists.map((list) => (
@@ -371,6 +383,17 @@ export default function AppLayout() {
               <span className="app-nav-link-text">{item.label}</span>
             </NavLink>
           ))}
+
+          {profile?.isAdmin ? (
+            <NavLink
+              to="/admin/users"
+              title="User Management"
+              className={({ isActive }) => `app-nav-link${isActive ? " active" : ""}`}
+            >
+              <ShieldCheck size={15} aria-hidden />
+              <span className="app-nav-link-text">User Management</span>
+            </NavLink>
+          ) : null}
         </nav>
       </aside>
 
@@ -392,7 +415,6 @@ export default function AppLayout() {
             </button>
           </div>
           <div className="app-user">
-            <span className="app-bell"><Bell size={14} /></span>
             <div className="app-user-meta">
               <strong className={profileLoading ? "ui-text-shimmer" : undefined} title={email || undefined}>
                 {displayName}

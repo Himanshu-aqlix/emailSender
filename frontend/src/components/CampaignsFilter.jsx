@@ -18,9 +18,9 @@ const DATE_PRESETS = [
 
 const STATUS_OPTIONS = [
   { key: null, label: "Any status" },
-  { key: "draft", label: "Draft" },
-  { key: "sending", label: "Sending" },
+  { key: "processing", label: "Processing" },
   { key: "completed", label: "Completed" },
+  { key: "failed", label: "Failed" },
 ];
 
 export default function CampaignsFilter({ open, onClose, draft, onDraftChange, onApply, onReset }) {

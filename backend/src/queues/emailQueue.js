@@ -15,6 +15,23 @@ let queueFailed = false;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const logCampaignDiagnostic = (message, payload = {}) => {
+  console.log("[campaign-send-diagnostic]", message, {
+    at: new Date().toISOString(),
+    ...payload,
+  });
+};
+
+const getQueueSnapshot = async () => {
+  if (!queue || queueFailed) return { enabled: false, failed: queueFailed };
+  try {
+    const counts = await queue.getJobCounts("waiting", "active", "delayed", "completed", "failed");
+    return { enabled: true, failed: false, counts };
+  } catch (error) {
+    return { enabled: true, failed: queueFailed, error: error?.message || String(error) };
+  }
+};
+
 const escapeHtml = (value) =>
   String(value || "")
     .replace(/&/g, "&amp;")
@@ -73,16 +90,54 @@ const processCampaign = async (job) => {
   const template = await Template.findById(campaign.templateId);
   const targetListIds = Array.isArray(campaign.listIds) && campaign.listIds.length ? campaign.listIds : [campaign.listId];
   const contacts = await Contact.find({ owner: campaign.owner, lists: { $in: targetListIds } });
-  campaign.status = "sending";
+  const totalRecipients = contacts.length;
+  logCampaignDiagnostic("worker-start", {
+    campaignId: String(campaign._id),
+    jobId: job.id || null,
+    queue: await getQueueSnapshot(),
+    totalRecipients,
+    targetListIds: targetListIds.map((id) => String(id || "")),
+    previousStatus: campaign.status,
+  });
+  campaign.status = "processing";
   await campaign.save();
-  for (const c of contacts) {
+  logCampaignDiagnostic("status-set-processing", {
+    campaignId: String(campaign._id),
+    totalRecipients,
+  });
+  for (let index = 0; index < contacts.length; index += 1) {
+    const c = contacts[index];
+    const recipientIndex = index + 1;
     const recipientUser = await User.findOne({ email: c.email.toLowerCase() }).select("unsubscribed").lean().catch(() => null);
     if (recipientUser?.unsubscribed) {
       skippedCount += 1;
+      logCampaignDiagnostic("recipient-skipped-unsubscribed", {
+        campaignId: String(campaign._id),
+        email: c.email,
+        recipientIndex,
+        totalRecipients,
+        processedCount: sentCount + failedCount + skippedCount,
+        sentCount,
+        failedCount,
+        skippedCount,
+      });
       continue;
     }
 
     const log = await EmailLog.create({ owner: campaign.owner, email: c.email, campaignId: campaign._id });
+    logCampaignDiagnostic("recipient-send-start", {
+      campaignId: String(campaign._id),
+      email: c.email,
+      logId: String(log._id),
+      initialLogStatus: log.status,
+      recipientIndex,
+      batchIndex: recipientIndex,
+      totalRecipients,
+      processedCount: sentCount + failedCount + skippedCount,
+      sentCount,
+      failedCount,
+      skippedCount,
+    });
     try {
       const allowSmtpFallback = process.env.ALLOW_SMTP_FALLBACK !== "false";
       const fld = c.fields && typeof c.fields === "object" ? { ...c.fields } : {};
@@ -91,7 +146,14 @@ const processCampaign = async (job) => {
         name: c.name ?? fld.name ?? "",
         email: c.email ?? "",
         phone: c.phone ?? fld.phone ?? "",
-        company: fld.company != null ? String(fld.company) : "",
+        company:
+          c.companyName != null && String(c.companyName).trim() !== ""
+            ? String(c.companyName)
+            : fld.company != null
+              ? String(fld.company)
+              : fld.companyName != null
+                ? String(fld.companyName)
+                : "",
         date: new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }),
         campaign_name: campaign.name || "",
       };
@@ -151,18 +213,63 @@ const processCampaign = async (job) => {
       log.sentAt = new Date();
       await log.save();
       sentCount += 1;
+      logCampaignDiagnostic("recipient-send-success", {
+        campaignId: String(campaign._id),
+        email: c.email,
+        logId: String(log._id),
+        recipientIndex,
+        batchIndex: recipientIndex,
+        totalRecipients,
+        processedCount: sentCount + failedCount + skippedCount,
+        sentCount,
+        failedCount,
+        skippedCount,
+      });
     } catch (sendError) {
       console.error(`[email] Send failed for ${c.email}:`, sendError?.message || sendError);
       log.status = "failed";
       await log.save();
       failedCount += 1;
+      logCampaignDiagnostic("recipient-send-failed", {
+        campaignId: String(campaign._id),
+        email: c.email,
+        logId: String(log._id),
+        recipientIndex,
+        batchIndex: recipientIndex,
+        totalRecipients,
+        processedCount: sentCount + failedCount + skippedCount,
+        sentCount,
+        failedCount,
+        skippedCount,
+        error: sendError?.message || String(sendError),
+      });
     } finally {
       // Keep Brevo transactional sends under rate limits.
       await delay(450);
     }
   }
+  logCampaignDiagnostic("status-set-completed-attempt", {
+    campaignId: String(campaign._id),
+    totalRecipients,
+    processedCount: sentCount + failedCount + skippedCount,
+    sentCount,
+    failedCount,
+    skippedCount,
+    nextStatus: sentCount === 0 && failedCount > 0 ? "failed" : "completed",
+    queue: await getQueueSnapshot(),
+  });
   campaign.status = sentCount === 0 && failedCount > 0 ? "failed" : "completed";
   await campaign.save();
+  logCampaignDiagnostic("status-set-completed-saved", {
+    campaignId: String(campaign._id),
+    totalRecipients,
+    processedCount: sentCount + failedCount + skippedCount,
+    sentCount,
+    failedCount,
+    skippedCount,
+    finalStatus: campaign.status,
+    queue: await getQueueSnapshot(),
+  });
 
   if (sentCount === 0 && failedCount > 0) {
     throw new Error(`All email sends failed (failed=${failedCount}, skipped=${skippedCount}). Check MAIL_FROM/BREVO_API_KEY/SMTP credentials.`);
@@ -195,11 +302,25 @@ if (queue) {
 
 const enqueueCampaign = async (campaignId) => {
   if (queue && !queueFailed) {
-    await queue.add({ campaignId }, { attempts: 3, backoff: { type: "exponential", delay: 3000 } });
+    const job = await queue.add({ campaignId }, { attempts: 3, backoff: { type: "exponential", delay: 3000 } });
+    logCampaignDiagnostic("campaign-enqueued", {
+      campaignId: String(campaignId),
+      jobId: job.id || null,
+      queue: await getQueueSnapshot(),
+    });
     return { queued: true };
   }
-  await processCampaign({ data: { campaignId } });
-  return { queued: false };
+  logCampaignDiagnostic("campaign-direct-background-start", {
+    campaignId: String(campaignId),
+    queue: await getQueueSnapshot(),
+  });
+  setImmediate(() => {
+    processCampaign({ data: { campaignId } }).catch(async (error) => {
+      console.error("[queue] Background campaign processing failed:", error?.message || error);
+      await Campaign.updateOne({ _id: campaignId }, { $set: { status: "failed" } }).catch(() => null);
+    });
+  });
+  return { queued: false, background: true };
 };
 
 module.exports = { enqueueCampaign };
