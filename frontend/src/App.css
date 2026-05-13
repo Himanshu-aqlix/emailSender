@@ -454,6 +454,44 @@ body {
   scroll-behavior: smooth;
 }
 
+.app-footer {
+  flex-shrink: 0;
+  width: 100%;
+  margin: 0;
+  padding: clamp(10px, 2vw, 14px) clamp(16px, 4vw, 24px);
+  text-align: center;
+  background: #f8fafc;
+  border-top: 1px solid var(--border-ui, #e2e8f0);
+  box-sizing: border-box;
+}
+.app-footer-text {
+  margin: 0;
+  font-size: clamp(11px, 2.4vw, 13px);
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--text-secondary, #64748b);
+  letter-spacing: 0.01em;
+}
+.app-footer-link {
+  font-weight: 600;
+  color: var(--accent, #6366f1);
+  text-decoration: none;
+  transition:
+    color var(--duration-ui, 0.2s) var(--ease-out, cubic-bezier(0.4, 0, 0.2, 1)),
+    text-decoration-color var(--duration-ui, 0.2s) var(--ease-out, cubic-bezier(0.4, 0, 0.2, 1));
+  text-decoration-color: transparent;
+}
+.app-footer-link:hover {
+  color: var(--accent-hover, #4f46e5);
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+}
+.app-footer-link:focus-visible {
+  outline: 2px solid var(--accent, #6366f1);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 /* Route content: subtle enter when navigating */
 .app-outlet {
   animation: app-outlet-enter 0.38s var(--ease-out, cubic-bezier(0.4, 0, 0.2, 1));

@@ -443,6 +443,19 @@ export default function AppLayout() {
             <Outlet />
           </div>
         </div>
+        <footer className="app-footer" role="contentinfo">
+          <p className="app-footer-text">
+            Powered By{" "}
+            <a
+              className="app-footer-link"
+              href="https://aqlix.com"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Aqlix IT Solutions
+            </a>
+          </p>
+        </footer>
       </main>
 
       {showLogoutConfirm ? (

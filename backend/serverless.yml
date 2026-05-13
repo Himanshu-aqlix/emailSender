@@ -21,6 +21,8 @@ provider:
     USE_SENDGRID: ${env:USE_SENDGRID}
     BREVO_API_KEY: ${env:BREVO_API_KEY}
     MAIL_FROM: ${env:MAIL_FROM}
+    ADMIN_EMAIL: ${env:ADMIN_EMAIL}
+    ADMIN_PASSWORD: ${env:ADMIN_PASSWORD}
 
 functions:
   app:
